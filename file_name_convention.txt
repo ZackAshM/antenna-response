@@ -1,0 +1,41 @@
+Naming convention for data files for compatibility with plotting scripts
+
+Updated (as of): 2022 08 19
+
+Naming: {transmitter}_to_{receiver}_{polarization}_{plane}_{optional descriptor}_{angle}_{trial} (_{scope channel}.csv)
+The portion in parenthesis is filled in by the scope automatically.
+
+If pulser data: {DEVICE}_PULSE_{optional descriptor}_{trial} (_{scope channel}.csv)
+DEVICE = AVTECH, FID
+Optional descriptor = examples: 1CABLE, 2CABLES, or the date
+
+Transmitter, Receiver:
+- "UCLA" = UCLA calibrated horn
+- "R1A" = RFSpin Antenna 1 Port A
+- "R2B" = RFSpin Antenna 2 Port B
+- etc.
+- "T1A" = Toyon Antenna 1 Port A
+- etc.
+
+Polarizations:
+- "HPOL" = receiver and transmitter connected to horizontal port
+- "VPOL" = receiver and transmitter connected to vertical port
+- "XPOL" = cross pol measurement; receiver and transmitter pols perpendicular [Not needed if separated by scope channel, i.e. if measured same time as other port]
+
+Plane:
+E = rotation is perpendicular to the polarization
+H = rotation is parallel to the polarization
+
+Optional Descriptors: (examples)
+- "NOFOAM" = no foam
+- "LONGFOAM" = only long boxes of foam used (aka partial foam coverage)
+- "FULLFOAM" = all boxes of foam used ('full' coverage)
+- "VTILT" or "ZE" = Vertical Tilt / Zenith / Antenna pitch angles
+
+Angle:
+- Integer only
+- For negative angles, use "NEG"
+
+Trial:
+- For record keeping multiple takes
+- Move 'bad' trials out of the data directory
