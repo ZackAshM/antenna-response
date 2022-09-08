@@ -111,8 +111,8 @@ class antenna_response:
         self.angle_lim = (-180,180)
         self.set_angles(self.angle_lim)  # --> self.angles, self.signals
         self.labels = [self.pulse.label] + [sig.label for sig in self.signals]
-        self.front_dist_m = 9.845
-        self.back_dist_m = 8.382
+        self.front_dist_m = 8.382
+        self.back_dist_m = 9.845
         self.bandGHz = (0.3,1.2)
         
         # -properties-
@@ -239,19 +239,168 @@ class antenna_response:
         
         warn("WARNING [antenna_response.impulse_response()]: THIS METHOD IS NOT YET COMPLETE.")
         
-        # to restore angles later
-        original_angle_lim = self.angle_lim
+        # get pulser and signal, fHz should be the same for both (if same samplerate)
+        bs = self.boresight[0]
+        print('bs size: ', bs.vdata.size)
+        print('pulse size: ', self.pulse.vdata.size)
+        # self.pulse.truncate((98e-9,113e-9))
+        # bs.truncate((525e-9,540e-9))
         
-        # only want boresight
-        self.set_angles((0,0))
+        fHz, pfft, _ = self.pulse.calc_fft()#rfft=True)
+        _ , sfft, _ = bs.calc_fft()#rfft=True)    # only want boresight signal
+        
+        print('bs fft: ', sfft.size)
+        print('pfft: ', pfft.size)
+        
+        # noise = self.pulse#boresight[0]
+        # noise.truncate(noise.estimate_window(t_ns_offset = 170))
+        # _, nfft, _ = noise.calc_fft()
+        # noise.plot()
+        
+        # self.pulse.truncate((4.89e-7,5.01e-7))
+        # bs.truncate((5.23e-7,5.35e-7))
+        
+        # self.pulse.plot()
+        # bs.plot()
+        
+        # get distance linear interpolation
+        fftsize = fHz.size
+        print('freq: ', fftsize)
+        pos_size = int(fftsize/2) if fftsize % 2 == 0 else int(fftsize/2) + 1  # size for positive freq side
+        pos_dist = np.linspace(self.front_dist_m, self.back_dist_m, pos_size)
+        neg_dist = np.linspace(self.back_dist_m, self.front_dist_m, int(fftsize/2))
+        dist = np.append(neg_dist, pos_dist)
+        # dist = np.linspace(self.front_dist_m, self.back_dist_m, fftsize)
+        
+        # the physical factor
+        phys = (dist * c) / (1j * fHz)   # [m^2]
         
         # calculate impulse response (TO DO)
-        imp_resp = None
         
-        # reset angles
-        self.set_angles(original_angle_lim)
+        # Simply division: IR = sqrt((r*c*V_r(f)) / (i*f*V_src(f)))
+        IRfft2 = phys * ( sfft / pfft )  # the fft of imp resp squared (radicand)
+        
+        # -- wiener deconvolution --
+        
+        # snr determination
+        # snr = 100            # constant all freq
+        
+        fGHz_ordered = np.fft.fftshift(fHz)*1e-9
+        fGHz_pos = fGHz_ordered[fGHz_ordered > 0]
+        
+        lowband1 = np.logical_and( 0<=fGHz_pos, fGHz_pos<0.15 )
+        lowband2 = np.logical_and( 0.15<=fGHz_pos, fGHz_pos<0.3 )
+        withinband = np.logical_and( 0.3<=fGHz_pos, fGHz_pos<=1.2 )
+        aboveband1 = np.logical_and( 1.2<fGHz_pos, fGHz_pos<1.35 )
+        aboveband2 = np.logical_and( 1.35<=fGHz_pos, fGHz_pos<np.inf )
+        
+        below1 = np.ones(len(fGHz_pos[lowband1]))
+        below2 = np.linspace(1,1000,len(fGHz_pos[lowband2]),endpoint=True)
+        within = 1000*np.ones(len(fGHz_pos[withinband]))
+        above1 = np.linspace(1000,1,len(fGHz_pos[aboveband1]),endpoint=True)
+        above2 = np.ones(len(fGHz_pos[aboveband2]))
+        
+        snr_pos = np.hstack((below1, below2, within, above1, above2))
+        snr = np.hstack((snr_pos,np.flip(snr_pos)))
+        
+        print('snr: ', snr.size)
+        
+        # snr = np.array([1 if np.abs(f)<0.3e9 else 1000 if np.abs(f)<=1.2e9 else 1 for f in fHz])    # constant inband snr vs constant outofband snr
+        # snr = sfft / nfft
+        
+        # print(fHz*1e-9)
+        # print(snr)
+        
+        # wiener filtering
+        pfft_eff = pfft / phys
+        gfft = (1 / pfft_eff) * (1 / (1 + 1 / (np.abs(pfft_eff)**2 * snr)))
+        
+        # impulse response calc
+        IRfft2w = gfft * sfft
+        
+        # --------------------------
+        
+        # other methods...
+        
+        # unwrap phase to take the sqrt
+        IRfft2mag = np.abs(IRfft2)
+        IRfft2phi = np.angle(IRfft2)
+        IRfft2phiunwrapped = np.unwrap(IRfft2phi)
+        
+        IRfft2magw = np.abs(IRfft2w)
+        IRfft2phiw = np.angle(IRfft2w)
+        IRfft2phiunwrappedw = np.unwrap(IRfft2phiw)
+        
+        # take the sqrt (half of the phase)
+        phases = 0.5 * IRfft2phiunwrapped
+        phases = (phases + np.pi) % (2 * np.pi) - np.pi  # wrap again (do we need to do this?)
+        IRfft = np.sqrt(IRfft2mag) * np.exp(1j * phases)
+        
+        phasesw = 0.5 * IRfft2phiunwrappedw
+        phasesw = (phasesw + np.pi) % (2 * np.pi) - np.pi  # wrap again (do we need to do this?)
+        IRfftw = np.sqrt(IRfft2magw) * np.exp(1j * phasesw)
+        
+        # ------
+        
+        ax = plt.subplots(figsize=(30,15))[1]
+        ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfft)**2/50)), ls="--", lw=6, c='black',label="Simple Division")
+        ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfftw)**2/50)), lw=6, c='black', label="Wiener Deconvolution")
+        ax.set(xlim=(0,None), xlabel="f [GHz]", ylabel=r"$10\log{$|fft|$^2/50}$ [dB]")
+        ax.set_title(antennas.catalog[bs.Rx[0]] + " Impulse Response FFT")
+        
+        dBmin, dBmax = ax.get_ylim()
+        fmin, fmax = ax.get_xlim()
+        ax.axvline(x=0.3, c='gray', ls='--', lw=4, label="PUEO Band")
+        ax.axvline(x=1.2, c='gray', ls='--', lw=4)
+        ax.axvspan(0, 0.3, facecolor='grey', alpha=0.2)
+        ax.axvspan(1.2, fmax, facecolor='grey', alpha=0.2)
+        
+        leg = ax.legend(loc="lower left")
+        for line in leg.get_lines(): 
+            line.set_linewidth(15)
+        
+        # ------
+        
+        # inverse fft
+        IRfft = np.insert(IRfft, 0, 0)
+        # print(IRfft)
+        imp_resp = np.fft.fftshift(np.fft.ifft(IRfft))
+        
+        # -- Checking --
+        
+        # stest = np.convolve(imp_resp, np.convolve(imp_resp, np.gradient(self.pulse.vdata), mode="same"), mode='same')[:-1] / phys
+        # ax = plt.subplots(figsize=(30,15))[1]
+        # ax.plot(bs.tdata[:-1], stest, label="Convolved")
+        # self.boresight[0].plot(ax=ax, label="Original")
+        # ax.legend(loc="upper right")
+        
+        # --------------
+        
+        # imp_resp = None
         
         return imp_resp
+    
+    def plot_impulse_response(self, ax=None, **kwargs):
+        
+        # bs = self.boresight[0]
+        
+        # default plot kwargs
+        title = kwargs.pop("title",self.signals[0].Rx + " Impulse Response")
+        
+        imp_resp = self.impulse_response
+        
+        if ax is None:
+            ax = plt.subplots(figsize=(30,15))[1]
+        
+        dt = self.signals[0].samplerate
+        
+        imp_resp_t = [dt*i*1e9-20 for i in range(len(imp_resp))]#np.linspace(0, 70, len(imp_resp))
+        ax.plot(imp_resp_t, imp_resp, lw=6, **kwargs)#bs.tdata[:-1], imp_resp, lw=6)
+        ax.set(ylabel="Response [m/ns]", xlabel='t [ns]')
+        ax.set_title(title)
+        # bs.plot(ax=ax)
+        # self.boresight[0].plot(ax=ax)
+        # self.pulse.plot(ax=ax)
         
     
     def _set_data(self, filepaths: list):
@@ -344,10 +493,16 @@ class antenna_response:
         # for labeling purposes
         antenna_name = antennas.catalog[bs_waveform.Rx[0]]
         
+        # default plotting kwargs
+        color = kwargs.pop("color","black")
+        color = kwargs.pop("c","black")
+        ls = kwargs.pop("ls","-")
+        lw = kwargs.pop("lw",6)
+        
         # plot predicted and calculated
         ax.plot(_fGHz, predicted_gain, lw=6, label='Predicted {}'.format(antenna_name))
-        ax.plot(_fGHz, bs_gain(_fGHz*1e9), c='black', label='Measured {}'.format(antenna_name),
-                ls='',marker='o',lw=5,ms=20)
+        ax.plot(_fGHz, bs_gain(_fGHz*1e9), label='Measured {}'.format(antenna_name),
+                c=color, ls=ls, lw=lw, **kwargs)#marker='o',lw=6,ms=15)
         
         # plot settings
         ax.set(xlim=(0.3 - 0.05, 1.2 + 0.05), ylim=(0, 16.5),
@@ -476,8 +631,8 @@ class antenna_response:
 
         """
         
-        if fGHz is None:   # then return full band
-            fGHz = np.arange(self.bandGHz[0], self.bandGHz[1]+0.01, 0.1)
+        if fGHz is None:   # then return full band at 100 MHz intervals
+            fGHz = np.linspace(self.bandGHz[0], self.bandGHz[1], 10, endpoint=True)
         else:      # then truncate to band if necessary
             if (fGHz.min() < self.bandGHz[0]) or (fGHz.max() > self.bandGHz[1]):
                 warn('WARNING [{}: Chosen frequencies of interest '.format(location) +
