@@ -101,13 +101,14 @@ class waveform:
     
     '''
     
-    def __init__(self, path):
+    def __init__(self, path, parse_name=True):
         
         # parse filename info
         self.path = Path(path).resolve() if type(path) != PosixPath else path
         self.date = str(self.path).split("/")[-2]
         self.name = self.path.name
-        self._parse_filename() # --> self.pulse, self.Tx, self.Rx, self.pol, self.descriptor, self.angle_str, self.angle, self.trial
+        if parse_name:
+            self._parse_filename() # --> self.pulse, self.Tx, self.Rx, self.pol, self.descriptor, self.angle_str, self.angle, self.trial
         
         # assumes oscilloscope data, [V,t] on columns [3,4] with units [volts, seconds]
         self.vcol = "V [V]"
@@ -164,7 +165,7 @@ class waveform:
         
         parts = self.name.split("_")
         
-        self.pulse = 'PULSE' in parts   # this is pulser data
+        self.pulse = ('PULSE' in parts) or ('PULSER' in parts)   # this is pulser data
         if self.pulse:
             self.Tx = ""
             self.Rx = ""
@@ -184,7 +185,7 @@ class waveform:
             self.trial = parts[-2]
     
     # - Methods -
-    def truncate(self, window: tuple) -> None:
+    def truncate(self, window: tuple, zeropad: int = 0) -> None:
         '''
         Truncate the waveform in time domain.
 
@@ -193,6 +194,9 @@ class waveform:
         window : tuple
             The time domain window (tmin, tmax) in seconds to truncate the waveform
             instance's self.data.
+        zeropad : int
+            Zeropad the voltage data with the given length, appended at the end of 
+            the data.
         
         Returns
         -------
@@ -205,10 +209,20 @@ class waveform:
         
         # set the time limits
         t_min, t_max = window
-        bounds = np.logical_and(t_min <= rawdata[self.tcol], rawdata[self.tcol] <= t_max)
+        bounds = np.logical_and(t_min < rawdata[self.tcol], rawdata[self.tcol] < t_max)
         
         # overwrite instance self.data
         self.data = rawdata[bounds].reset_index(drop=True)
+        
+        # zeropad the end
+        if zeropad > 0:
+            self._zeropad(size=zeropad)
+        elif zeropad < 0:
+            raise ValueError("Error [waveform.truncate()]: zeropad cannot be negative.")
+            
+        # for easy FFT'ing, just make it odd length (drop last row if even size)
+        if self.vdata.size % 2 == 0: # even
+            self.data.drop(self.data.tail(1).index, inplace=True)
         
     # We can use this instead of having to find the window manually every time.
     # The default window length and offset we chosen based on the worst case
@@ -231,10 +245,12 @@ class waveform:
         '''
         
         # get the index of the voltage peak
-        peak_ind = (np.abs(self.vdata - np.max(np.abs(self.vdata)))).argmin()
+        v = self._rawdata[self.vcol].values
+        t = self._rawdata[self.tcol].values
+        peak_ind = (np.abs(v - np.max(np.abs(v)))).argmin()
         
         # determine the window min and max
-        tmin = self.tdata[peak_ind] - 20e-9
+        tmin = t[peak_ind] - t_ns_offset*1e-9
         tmax = tmin + dt_ns*1e-9
         
         return (tmin,tmax)
@@ -412,6 +428,36 @@ class waveform:
         
         if legend:
             ax.legend(loc='upper right')
+            
+    # zero pad the waveform (to be used when truncating)
+    def _zeropad(self, size=4):
+        '''
+        Zero pad the voltage data at the end.
+        
+        Parameters
+        ----------
+        size : int, optional
+            The size of the padding.
+        
+        Returns
+        -------
+        None
+        '''
+        
+        # get time info
+        dt = self.samplerate
+        tf = self.tdata[-1]
+        
+        # create padded data, time continuation, 0 for voltage
+        t_padded = [tf + dt*i for i in range(size)]
+        v_padded = np.zeros(size)
+        
+        # the padded dataframe
+        padding = pd.DataFrame({self.tcol: t_padded, self.vcol: v_padded})
+        
+        # set this object's data to the padded dataframe
+        self.data = pd.concat((self.data,padding), ignore_index=True)
+        
     
     # check power is conserved after FFT
     def _check_parseval(self, rfft: bool = True) -> None:
