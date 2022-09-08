@@ -23,6 +23,7 @@ from scipy.interpolate import interp1d
 
 # Boresight gains of UCLA, Toyon, and RFSpin, used in gain calculation
 __UCLA = np.genfromtxt(DATA_DIR / "uclahorn_gain_10m.csv", delimiter=',', unpack=True, usecols=[0,1]) # f [MHz], gain [dB]
+# __UCLA = np.genfromtxt(DATA_DIR / "RGainvFreq-UCLAHorn.txt", delimiter='\t', unpack=True) # f [GHz], gain [dB]
 __TOYON = np.genfromtxt(DATA_DIR / "Toyon_digitized.txt", delimiter=',', unpack=True)   # f [GHz], gain [dB]
 __RFSPIN = np.genfromtxt(DATA_DIR / "RFSpin_digitized.txt", delimiter=',', unpack=True) # f [GHz], gain [dB]
 
@@ -36,6 +37,7 @@ catalog = {
 # allows access to the desired file via the filename labeling / catalog
 gain = {
     'U':interp1d(__UCLA[0] * 1e6, __UCLA[1], assume_sorted=True, bounds_error=True),
+    # 'U':interp1d(__UCLA[0] * 1e9, __UCLA[1], assume_sorted=True, bounds_error=True),
     'T':interp1d(__TOYON[0] * 1e9, __TOYON[1], assume_sorted=True, bounds_error=True),
     'R':interp1d(__RFSPIN[0] * 1e9, __RFSPIN[1], assume_sorted=True, bounds_error=True),
     }
