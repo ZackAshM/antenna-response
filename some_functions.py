@@ -82,7 +82,12 @@ def restrict_to_band(bandGHz, fHz, *args):
     fGHzmin, fGHzmax = bandGHz
     
     # set the mask
-    within_band = np.logical_and(fGHzmin*1e9 <= fHz,fHz <= fGHzmax*1e9)
+    within_band = np.logical_and(fGHzmin*1e9 < fHz,fHz < fGHzmax*1e9)
+    
+    # set the edges to be one step further to include the bounds within the range
+    idx = np.nonzero(within_band)
+    within_band[idx[0] - 1] = True
+    within_band[idx[-1] + 1] = True
     
     # make the list of truncated arrays
     return_arrays = [fHz[within_band]] + [arr[within_band] for arr in args]

@@ -66,6 +66,8 @@ class waveform:
         The angle in the file name converted from a string to a number.
     trial : str
         File name part referring to the trial number.
+    ch : str
+        The scope channel of the data.
     vcol : str
         The voltage column label.
     tcol : str
@@ -108,7 +110,7 @@ class waveform:
         self.date = str(self.path).split("/")[-2]
         self.name = self.path.name
         if parse_name:
-            self._parse_filename() # --> self.pulse, self.Tx, self.Rx, self.pol, self.descriptor, self.angle_str, self.angle, self.trial
+            self._parse_filename() # --> self.pulse, self.Tx, self.Rx, self.pol, self.descriptor, self.angle_str, self.angle, self.trial, self.ch
         
         # assumes oscilloscope data, [V,t] on columns [3,4] with units [volts, seconds]
         self.vcol = "V [V]"
@@ -174,6 +176,7 @@ class waveform:
             self.angle_str = ""
             self.angle = ""
             self.trial = parts[-2]
+            self.ch = ""
             
         else:                           # this is signal data
             self.Tx = parts[0]
@@ -183,6 +186,7 @@ class waveform:
             self.angle_str = parts[-3]
             self.angle = -1*int(self.angle_str[3:]) if "NEG" in self.angle_str else int(self.angle_str)
             self.trial = parts[-2]
+            self.ch = parts[-1][:3]
     
     # - Methods -
     def truncate(self, window: tuple, zeropad: int = 0) -> None:
@@ -520,6 +524,7 @@ class waveform:
 # print(foo.angle_str)
 # print(foo.angle)
 # print(foo.trial)
+# print(foo.ch)
 # print(foo.vdata)
 # print(foo.tdata)
 # print(foo.datasize)

@@ -149,11 +149,8 @@ class antenna_response:
         
         # get pulse FFT, restrict it to PUEO band (with 5% margin)
         pul_fHz, pul_rfft, pul_dB = self.pulse.calc_fft(rfft=True, ignore_DC=True)
-        # band = (self.bandGHz[0]*0.95, self.bandGHz[1]*1.05) # band with 5% margins, because it yells if we want .3 GHz when it restricts to 0.3000001 GHz or whatever
-        # pul_fHz, pul_rfft, pul_dB = sf.restrict_to_band(band, pul_fHz_, pul_rfft_, pul_dB_)
         
         # hard to trust freq arrays will always match, so let's interpolate
-        # to prevent edge extrapolations,  we've ensured the arrays are restricted to the band of interest
         pul_gain = interp1d(pul_fHz, pul_dB, assume_sorted=True, bounds_error=True)
         
         # use these later to check consistency in all of the files (but does not fix inconsistencies)
@@ -172,10 +169,8 @@ class antenna_response:
             
             # get signal FFT, restrict it to PUEO band (with 5% margin)
             sig_fHz, sig_rfft, sig_dB = sig_waveform.calc_fft(rfft=True, ignore_DC=True)
-            # sig_fHz, sig_rfft, sig_dB = sf.restrict_to_band(band, sig_fHz_, sig_rfft_, sig_dB_)
             
             # hard to trust freq arrays will always match, so let's interpolate
-            # to prevent edge extrapolations,  we've ensured the arrays are restricted to the band of interest
             _sig_gain = interp1d(sig_fHz, sig_dB, assume_sorted=True, bounds_error=True)
             
             # add to the list
@@ -192,12 +187,12 @@ class antenna_response:
             
         # gain calculation time
         
-        # set our domain, this should be sorted already, postive freqs in Hz
-        fHz_ = pul_fHz.copy()
-        band = (self.bandGHz[0]*0.95, self.bandGHz[1]*1.05) # band with 5% margins, because it yells if we want .3 GHz when it restricts to 0.3000001 GHz or whatever
-        fHz = sf.restrict_to_band(band, fHz_)[0]
+        # set our domain, postive freqs in Hz
+        fHz = np.linspace(self.bandGHz[0]*1e9, self.bandGHz[1]*1e9, pul_fHz.size, endpoint=True)
         
         # get distance linear interpolation
+        # NOTE: this is not accurate at different angles. The distance should be set
+        # for every angle. But this approximation for all angles is good enough for now.
         fftsize = fHz.size
         ant_dist = np.linspace(self.front_dist_m, self.back_dist_m, fftsize)
         
@@ -215,7 +210,7 @@ class antenna_response:
             _gains = [(sig_gain(fHz) - pul_gain(fHz) + friis_term) / 2 for sig_gain in sig_gains]
         else:
             _gains = [sig_gain(fHz) - pul_gain(fHz) + friis_term - antennas.gain[Tx[0]](fHz) for sig_gain in sig_gains]
-        
+                
         # return list of gain interpolations sorted by file
         return np.asarray([interp1d(fHz, gain, assume_sorted=True, bounds_error=True) for gain in _gains])
     
@@ -348,12 +343,17 @@ class antenna_response:
         ax.set(xlim=(0,None), xlabel="f [GHz]", ylabel=r"$10\log{$|fft|$^2/50}$ [dB]")
         ax.set_title(antennas.catalog[bs.Rx[0]] + " Impulse Response FFT")
         
+        pueoband = np.logical_and(0.3e9 < fHz, fHz < 1.2e9)
+        int_power = 2*np.sum(np.abs(IRfftw[pueoband])**2/50)#, dx=fHz[1]-fHz[0])#, x=fHz[pueoband])
+        
         dBmin, dBmax = ax.get_ylim()
         fmin, fmax = ax.get_xlim()
         ax.axvline(x=0.3, c='gray', ls='--', lw=4, label="PUEO Band")
         ax.axvline(x=1.2, c='gray', ls='--', lw=4)
         ax.axvspan(0, 0.3, facecolor='grey', alpha=0.2)
         ax.axvspan(1.2, fmax, facecolor='grey', alpha=0.2)
+        
+        ax.add_artist(AnchoredText("Integrated Power In Band: {:0.3} W".format(int_power), loc="lower right", frameon=True))
         
         leg = ax.legend(loc="lower left")
         for line in leg.get_lines(): 
@@ -362,9 +362,9 @@ class antenna_response:
         # ------
         
         # inverse fft
-        IRfft = np.insert(IRfft, 0, 0)
+        IRfftw = np.insert(IRfftw, 0, 0)
         # print(IRfft)
-        imp_resp = np.fft.fftshift(np.fft.ifft(IRfft))
+        imp_resp = np.fft.fftshift(np.fft.ifft(IRfftw))
         
         # -- Checking --
         
@@ -550,7 +550,7 @@ class antenna_response:
         """
         
         # set the frequency domain to be within the PUEO band
-        _fGHz = self._force_band(fGHz, 'antenna_response.plot_beampattern()')
+        _fGHz = fGHz#self._force_band(fGHz, 'antenna_response.plot_beampattern()')
         
         # get a good title
         wf = self.signals[0]  # one of the signal waveforms, assuming they all share base names
@@ -609,6 +609,47 @@ class antenna_response:
             legend = ax.legend(loc='upper right')
             for line in legend.get_lines(): 
                 line.set_linewidth(15)
+                
+                
+    def save_gains(self, fGHz, savepath: Path = HERE):
+        
+        # directory existence check
+        if not os.path.exists(savepath):
+            warn("WARNING [antenna_response.save_gains]: Given save directory does not exist. " +
+                 "Creating directory {} ...".format(savepath))
+            savepath.mkdir(parents=True)
+        
+        # get the gains
+        gains = [gain(fGHz*1e9) for gain in self.gains]
+        
+        # set filename parts (assuming all the same set up)
+        wf = self.signals[0]
+        
+        plane = "E" if wf.pol[0] == "H" else "H" if wf.pol[0] == "V" else "ERROR"
+        if wf.ch == "Ch2":
+            plane += "X"
+        
+        antenna = antennas.catalog[wf.Rx[0]]
+        
+        # save to file
+        for theta, gain in zip(self.angles, gains):
+            
+            filename = str(savepath) + '/' + "_".join([antenna, str(theta), plane]) + '.txt'
+            
+            # filename existence checks
+            if os.path.exists(filename):
+                proceed = input("WARNING [antenna_response.save_gains]: Filename " +
+                                "{} exists. Proceed to overwrite? [y/n]\n".format(filename))
+                while proceed != 'y':
+                    if proceed == "n":
+                        print("Ending program...")
+                        return 0
+                    proceed = input('Please use y or n\n')
+            
+            output = np.array([fGHz*1e9, gain]).T
+            
+            np.savetxt(filename, output, fmt=['%.2e','%.2f'])
+            
     
     def _force_band(self, fGHz=None, location="antenna_response"):
         """
