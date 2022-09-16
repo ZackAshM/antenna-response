@@ -12,6 +12,8 @@ Created on Fri Aug 19 03:18:41 2022
 # i like pathlib's path handling
 from pathlib import Path, PosixPath
 
+import some_functions as sf
+
 # functional imports
 import numpy as np
 import pandas as pd
@@ -94,6 +96,8 @@ class waveform:
     estimate_window
         Returns a time domain window based on the voltage peak, with the goal
         to encapsulate the whole pulse. This will usually be fed into self.truncate.
+    tukey_filter
+        Filter the voltage data based on a Tukey filter in a given time window.
     calc_fft -> tuple[np.ndarray,np.ndarray,np.ndarray]
         Calculates and returns the FFT (frequency [Hz], voltage [V], power [dB]).
     plot
@@ -132,13 +136,17 @@ class waveform:
     def vdata(self) -> np.ndarray:
         return self.data[self.vcol].values
     
+    @vdata.setter
+    def vdata(self, new_v: np.ndarray):
+        self.data[self.vcol] = new_v
+    
     @property
     def tdata(self) -> np.ndarray:
         return self.data[self.tcol].values
     
     @property
     def datasize(self) -> np.int64:
-        return self.vdata.size
+        return np.int64(self.data.size / 2)
     
     @property
     def samplerate(self) -> np.float64:
@@ -240,7 +248,7 @@ class waveform:
         dt_ns : int
             The window time length in nanoseconds. The default is 70.
         t_ns_offset : float
-            The window time offset in nanoseonds from the time of the voltage peak.
+            The window time offset (to the left) in nanoseonds from the time of the voltage peak.
 
         Returns
         -------
@@ -258,6 +266,59 @@ class waveform:
         tmax = tmin + dt_ns*1e-9
         
         return (tmin,tmax)
+    
+    def tukey_filter(self, time_window=None, r=0.5):
+        """
+        Filter vdata using a Tukey filter w/ parameter r at a given time window.
+
+        Parameters
+        ----------
+        time_window : tuple(2), 'peak', optional
+            The (t_initial, t_final) window location in seconds. By default (None), 
+            the full time range is used (although this is usually not particularly a 
+            useful choice other than zeroing the ends).
+        r : TYPE, optional
+            A parameter defining the edge of filter (see Tukey window). The default is 0.5.
+
+        Returns
+        -------
+        None
+
+        """
+        
+        # handle the filter window
+        if time_window is None:     # full time range by default
+            window_size = self.datasize
+            window_t0 = self.tdata[0]
+        else:
+            window_size = np.int64( (time_window[1] - time_window[0]) / self.samplerate )
+            window_t0 = time_window[0]
+        
+        # get the filter values in (0,1) domain
+        tukey = sf.tukey_window(window_size, r=r)
+        
+        # define the array holding the filter values in the time domain
+        filtering = np.zeros(self.datasize)
+        
+        
+        # TO-DO: make so that windowing can start filling in tukey before actual tdata is reached
+        # place tukey filter values in the corresponding time bins
+        window_iter = 0
+        for sample in range(self.datasize):
+            if self.tdata[sample] < window_t0:
+                continue
+            if window_iter < window_size:
+                filtering[sample] = tukey[window_iter]
+                window_iter += 1
+            else:
+                break
+        
+        # filter the vdata
+        self.vdata *= filtering
+        
+        # return the filtering in the time domain in case its needed (i.e. plotting)
+        return filtering
+        
     
     def calc_fft(self, rfft: bool = False, ignore_DC: bool = True) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
         '''

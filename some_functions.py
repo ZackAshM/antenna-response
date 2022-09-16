@@ -94,6 +94,25 @@ def restrict_to_band(bandGHz, fHz, *args):
     
     return return_arrays
 
+# for filtering using a tukey window
+def tukey_window(size, r=0.5):
+
+    # define the window and domain
+    w = np.zeros(size)
+    x = np.linspace(0, 1, size, endpoint=True)
+    
+    # define the piecewise function
+    left = np.logical_and(0 <= x, x < r/2)
+    middle = np.logical_and(r/2 <= x, x < 1 - r/2)
+    right = np.logical_and(1 - r/2 <= x, x <= 1)
+    
+    w[left] = 0.5 * ( 1 + np.cos( (2*np.pi / r) * (x[left] - r/2) ) )
+    w[middle] = 1
+    w[right] = 0.5 * ( 1 + np.cos( (2*np.pi / r) * (x[right] - 1 + r/2) ) )
+
+    # return the window
+    return w
+
 # Since there's so much just to make the plot look nice, I separated it into this function
 # If you haven't seen plotly before, prepare yourself for many dictionaries (though imo it's
 # easier to customize plot settings this way)

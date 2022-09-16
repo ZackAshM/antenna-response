@@ -24,6 +24,7 @@ import antennas
 import numpy as np
 from scipy.constants import c
 from scipy.interpolate import interp1d
+import copy
 
 # plotting imports
 import matplotlib.pyplot as plt
@@ -61,8 +62,11 @@ class antenna_response:
     
     Attributes
     ----------
-    dt.ns : float
-        The time domain window size in nanoseconds of the data truncation.
+    pulse_path : iterable[str or pathlib.Path]
+        The full path of the pulser data. If the iterable size is greater than 1,
+        only the first file is chosen as the pulse data.
+    signal_paths : iterable[str or pathlib.Path]
+        The full paths of the signal data.
     pulse : waveform
         The pulser waveform.
     angle_lim : tuple(2)
@@ -90,9 +94,21 @@ class antenna_response:
         Like self.gains, but only containing the gain interpolation for angle 0 degrees.
     impulse_response : scipy.interpolate.interp1d
         The calculated impulse response of the boresight signal. THIS IS NOT YET COMPLETED.
+    boresight_window : tuple(2)
+        The best truncation window for boresight data. This is recommended to be
+        applied to all of the signal waveforms.
+    tukey_window : tuple(2)
+        The best Tukey window for filtering, based on the boresight signal. It is
+        a narrower window than the boresight window, 4ns before the voltage peak
+        and 15ns wide (values based on observation of previous data, but is not 
+        necessarily the best for all data). This is recommended to be applied
+        to all of the signal waveforms.
     
     Methods
     -------
+    set_data
+        Set the pulse or signal waveforms according to a given truncate window and/or
+        Tukey filter window.
     set_angles
         Set the instance signals and angles according to self.angle_lim.
     plot_boresight
@@ -105,11 +121,11 @@ class antenna_response:
     
     def __init__(self, pulse_path, signal_paths):
         
-        self.dt_ns = 70  # window dt
-        self.pulse = self._set_data(pulse_path)[0]
-        self._signals = self._set_data(signal_paths)
+        self.pulse_path = pulse_path
+        self.signal_paths = signal_paths
         self.angle_lim = (-180,180)
-        self.set_angles(self.angle_lim)  # --> self.angles, self.signals
+        self.set_data(data='pulse')# --> self.pulse
+        self.set_data(data='signal', set_angles=self.angle_lim)# --> self.boresight, self.angles, self.signals
         self.labels = [self.pulse.label] + [sig.label for sig in self.signals]
         self.front_dist_m = 8.382
         self.back_dist_m = 9.845
@@ -122,27 +138,16 @@ class antenna_response:
         # self.impulse_response
     
     @property
-    def boresight(self):# -> ndarray[waveform]:
-        
-        # to restore angles later
-        original_angle_lim = self.angle_lim
-        
-        # set boresight only
-        self.set_angles((0,0))
-        
-        # there should only be 1 boresight signal
-        if len(self.signals) > 1:
-            warn("WARNING [antenna_response.boresight()]: More than 1 boresight file " +
-                 "was found. The antenna_response class should only be used for a " +
-                 "single horn to horn setup.")
-        
-        # get current (boresight) files
-        boresight_signals = self.signals
-        
-        # reset angles
-        self.set_angles(original_angle_lim)
-        
-        return boresight_signals
+    def boresight(self):
+        return [sig for sig in self.signals if sig.angle == 0][0]
+    
+    @property
+    def boresight_window(self):# -> tuple(2)
+        return self.boresight.estimate_window()
+    
+    @property
+    def tukey_window(self):# -> tuple(2)
+        return self.boresight.estimate_window(dt_ns=16, t_ns_offset=5)
     
     @property
     def gains(self):# -> np.ndarray[interp1d]:
@@ -401,66 +406,122 @@ class antenna_response:
         # bs.plot(ax=ax)
         # self.boresight[0].plot(ax=ax)
         # self.pulse.plot(ax=ax)
-        
     
-    def _set_data(self, filepaths: list):
+    def set_data(self, data, truncate='best', tukey_window='best', set_angles=None) -> None:
         """
-        Sets the instance's waveforms, truncated according to self.dt_ns and using
-        waveform.estimate_window().
+        Set and clean the data waveforms. Truncate and/or filter (Tukey).
 
         Parameters
         ----------
-        filepaths : iterable[str or pathlib.Path]
-            The full paths of the data.
+        data : {'pulse', 'signal'}
+            The type of the data.
+        truncate : tuple(2), 'best', None, optional
+            The window in seconds which to truncate the data. If 'best' then each waveform will
+            be truncated by the boresight_window if data is 'signal', or waveform.estimate_window()
+            if data is 'pulse'. If None, the data will not be truncated. The default is 'best'.
+        tukey_window : tuple(2), 'best', 'full', None, optional
+            The window in seconds which to apply a Tukey filter to the data. If 'best' then each
+            waveform will be filtered with the window given by the tukey_window attribute
+            if data is 'signal', or waveform.estimate_window(dt_ns=15, t_ns_offset=4) if data
+            is 'pulse'. If 'full', the filter will apply to the whole data range. If None, 
+            the data will not be filtered. The default is 'best'.
+        set_angles : tuple(2), optional
+            Set the angle limit of the data by (angle_min, angle_max).
 
         Returns
         -------
-        The array of truncated waveforms.
+        None
 
         """
         
-        # get list of waveforms from filepaths
-        data_waveforms = [waveform(path) for path in filepaths]
+        # settle data type
+        pulse = data == 'pulse'
+        signal = data == 'signal'
+        if not pulse and not signal:
+            raise ValueError("Error [antenna_response.set_data]: Parameter 'data' " +
+                             "must be one of 'pulse' or 'signal'.")
         
-        # truncate all of them using waveform.estimate_window()
-        for raw_data in data_waveforms:
-            raw_data.truncate(raw_data.estimate_window(self.dt_ns))
-        
-        # return the array containing the truncated waveforms
-        return np.array(data_waveforms)
-    
-    # attribute setter for self.angles, self.signals
-    def set_angles(self, angle_lim: tuple = None) -> None:
-        """
-        Set the instance signals and angles according to self.angle_lim.
-
-        Parameters
-        ----------
-        angle_lim : tuple(2), optional
-            The (min,max) angles in degree for determining which signal waveforms
-            to use. If None, this defaults to the currently set self.angle_lim.
-            Otherwise, self.angle_lim will be set to the new angle_lim given.
-
-        """
-        
-        # redefine instance's angle lim if given a new one
-        if angle_lim is not None:
-            self.angle_lim = angle_lim
-
-        # parse the bounds
-        angle_min, angle_max = self.angle_lim
+        # set waveforms
+        if pulse:
+            # data_waveforms = np.array([self._rawpulse])
+            data_waveforms = np.array([waveform(path) for path in self.pulse_path])
+            self.pulse = data_waveforms[0]
+        elif signal:
+            # data_waveforms = self._rawsignals
+            data_waveforms = np.array([waveform(path) for path in self.signal_paths])
+            self.signals = data_waveforms
             
-        # get everything within the angle limits
-        within_lim = lambda theta: np.logical_and(angle_min<=theta,theta<=angle_max)
-        angles = [sig.angle for sig in self._signals if within_lim(sig.angle)]
-        signals = [sig for sig in self._signals if within_lim(sig.angle)]
+            # set angle limits if given
+            if set_angles is None:
+                pass
+            else:
+                # redefine instance's angle lim if given a new one
+                self.angle_lim = set_angles
+
+                # parse the bounds
+                angle_min, angle_max = self.angle_lim
+                    
+                # get everything within the angle limits
+                within_lim = lambda theta: np.logical_and(angle_min<=theta,theta<=angle_max)
+                angles = [sig.angle for sig in data_waveforms if within_lim(sig.angle)]
+                signals = [sig for sig in data_waveforms if within_lim(sig.angle)]
+                
+                # check if there is a boresight signal
+                boresight_exists = 0 in angles
+                if not boresight_exists:
+                    raise RuntimeError("Error [antenna_response.set_data]: A boresight (angle 0) " +
+                                       "signal data was not found, but is necessary.")
+                
+                # index sorter will be used for signals too
+                angle_sorter = np.argsort(angles)
+                
+                # sort based on angle sorter
+                self.angles = np.array(angles)[angle_sorter]
+                data_waveforms = np.array(signals)[angle_sorter]
+                
         
-        # index sorter will be used for signals too
-        angle_sorter = np.argsort(angles)
+        # truncate
+        if truncate == 'best':
+            for raw_data in data_waveforms:
+                if pulse:
+                    raw_data.truncate(raw_data.estimate_window())
+                elif signal:
+                    raw_data.truncate(self.boresight_window)
+                    
+        elif truncate is None: # do nothing
+            pass
         
-        # sort based on angle sorter
-        self.angles = np.array(angles)[angle_sorter]
-        self.signals = np.array(signals)[angle_sorter]
+        else:
+            for raw_data in data_waveforms:
+                raw_data.truncate(truncate)
+        
+        # tukey filtering
+        if tukey_window == 'best':
+            for raw_data in data_waveforms:
+                if pulse:
+                    raw_data.tukey_filter(time_window=raw_data.estimate_window(dt_ns=25, t_ns_offset=5))
+                elif signal:
+                    raw_data.tukey_filter(time_window=self.tukey_window)
+                    
+        elif tukey_window == 'full':
+            if pulse:
+                raw_data.tukey_filter()
+            elif signal:
+                raw_data.tukey_filter()
+                
+        elif tukey_window is None: # do nothing
+            pass
+        
+        else:
+            for raw_data in data_waveforms:
+                raw_data.tukey_filter(time_window=tukey_window)
+        
+        # set the data to the array containing the (cleaned) waveforms
+        if pulse:
+            self.pulse = data_waveforms[0]
+        elif signal:
+            self.signals = data_waveforms
+
             
     def plot_boresight(self, fGHz=None, ax=None, **kwargs) -> None:
         """
