@@ -24,7 +24,6 @@ import antennas
 import numpy as np
 from scipy.constants import c
 from scipy.interpolate import interp1d
-import copy
 
 # plotting imports
 import matplotlib.pyplot as plt
@@ -108,9 +107,7 @@ class antenna_response:
     -------
     set_data
         Set the pulse or signal waveforms according to a given truncate window and/or
-        Tukey filter window.
-    set_angles
-        Set the instance signals and angles according to self.angle_lim.
+        Tukey filter window. Can also be used to set limits on angles.
     plot_boresight
         Plot the gain response [dB] vs frequency [GHz] of the boresight signal.
     plot_beampattern
@@ -124,6 +121,8 @@ class antenna_response:
         self.pulse_path = pulse_path
         self.signal_paths = signal_paths
         self.angle_lim = (-180,180)
+        self.pulse = None
+        self.signals = None
         self.set_data(data='pulse')# --> self.pulse
         self.set_data(data='signal', set_angles=self.angle_lim)# --> self.boresight, self.angles, self.signals
         self.labels = [self.pulse.label] + [sig.label for sig in self.signals]
@@ -222,15 +221,9 @@ class antenna_response:
     @property
     def boresight_gain(self):# -> interp1d:
         
-        # to restore angles later
-        original_angle_lim = self.angle_lim
-        
         # get gain for boresight only
-        self.set_angles((0,0))
-        gain = self.gains[0]
-        
-        # reset angles
-        self.set_angles(original_angle_lim)
+        boresight_idx = self.angles==0
+        gain = self.gains[boresight_idx][0]
         
         return gain
     
@@ -240,7 +233,7 @@ class antenna_response:
         warn("WARNING [antenna_response.impulse_response()]: THIS METHOD IS NOT YET COMPLETE.")
         
         # get pulser and signal, fHz should be the same for both (if same samplerate)
-        bs = self.boresight[0]
+        bs = self.boresight
         print('bs size: ', bs.vdata.size)
         print('pulse size: ', self.pulse.vdata.size)
         # self.pulse.truncate((98e-9,113e-9))
@@ -443,11 +436,11 @@ class antenna_response:
         
         # set waveforms
         if pulse:
-            # data_waveforms = np.array([self._rawpulse])
+            del self.pulse
             data_waveforms = np.array([waveform(path) for path in self.pulse_path])
             self.pulse = data_waveforms[0]
         elif signal:
-            # data_waveforms = self._rawsignals
+            del self.signals
             data_waveforms = np.array([waveform(path) for path in self.signal_paths])
             self.signals = data_waveforms
             
@@ -458,26 +451,27 @@ class antenna_response:
                 # redefine instance's angle lim if given a new one
                 self.angle_lim = set_angles
 
-                # parse the bounds
-                angle_min, angle_max = self.angle_lim
-                    
-                # get everything within the angle limits
-                within_lim = lambda theta: np.logical_and(angle_min<=theta,theta<=angle_max)
-                angles = [sig.angle for sig in data_waveforms if within_lim(sig.angle)]
-                signals = [sig for sig in data_waveforms if within_lim(sig.angle)]
+            # parse the bounds
+            angle_min, angle_max = self.angle_lim
                 
-                # check if there is a boresight signal
-                boresight_exists = 0 in angles
-                if not boresight_exists:
-                    raise RuntimeError("Error [antenna_response.set_data]: A boresight (angle 0) " +
-                                       "signal data was not found, but is necessary.")
-                
-                # index sorter will be used for signals too
-                angle_sorter = np.argsort(angles)
-                
-                # sort based on angle sorter
-                self.angles = np.array(angles)[angle_sorter]
-                data_waveforms = np.array(signals)[angle_sorter]
+            # get everything within the angle limits
+            within_lim = lambda theta: np.logical_and(angle_min<=theta,theta<=angle_max)
+            angles = [sig.angle for sig in data_waveforms if within_lim(sig.angle)]
+            signals = [sig for sig in data_waveforms if within_lim(sig.angle)]
+            
+            # check if there is a boresight signal
+            boresight_exists = 0 in angles
+            if not boresight_exists:
+                raise RuntimeError("Error [antenna_response.set_data]: A boresight (angle 0) " +
+                                   "signal data was not found, but is necessary.")
+            
+            # index sorter will be used for signals too
+            angle_sorter = np.argsort(angles)
+            
+            # sort based on angle sorter
+            self.angles = np.array(angles)[angle_sorter]
+        
+            data_waveforms = np.array(signals)[angle_sorter]
                 
         
         # truncate
@@ -542,7 +536,7 @@ class antenna_response:
         _fGHz = self._force_band(fGHz, 'antenna_response.plot_boresight()')
         
         # get the boresight waveform and gain
-        bs_waveform = self.boresight[0]
+        bs_waveform = self.boresight
         bs_gain = self.boresight_gain
         
         # handle plot instance
