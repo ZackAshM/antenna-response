@@ -76,6 +76,9 @@ class waveform:
         The time column label.
     data : pandas.Dataframe
         A Dataframe of the data with column names matching tcol and vcol.
+    filter : numpy.ndarray
+        If filtered using tukey_filter, this is the array of the filter array
+        in the data time domain.
     vdata : numpy.ndarray
         The voltage data array in volts.
     tdata : numpy.ndarray
@@ -122,6 +125,7 @@ class waveform:
         self._rawdata = pd.read_csv(self.path, names=[self.tcol, self.vcol], 
                                     usecols=[3,4], dtype={self.tcol:np.float64,self.vcol:np.float64})
         self.data = self._rawdata.copy()  # in cases of data manipulation to keep rawdata untouched
+        self.filter = None
         
         # -properties-
         # self.vdata
@@ -317,7 +321,7 @@ class waveform:
         self.vdata *= filtering
         
         # return the filtering in the time domain in case its needed (i.e. plotting)
-        return filtering
+        self.filter = filtering
         
     
     def calc_fft(self, rfft: bool = False, ignore_DC: bool = True) -> tuple[np.ndarray,np.ndarray,np.ndarray]:

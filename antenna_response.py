@@ -234,13 +234,17 @@ class antenna_response:
         
         # get pulser and signal, fHz should be the same for both (if same samplerate)
         bs = self.boresight
-        print('bs size: ', bs.vdata.size)
-        print('pulse size: ', self.pulse.vdata.size)
-        # self.pulse.truncate((98e-9,113e-9))
-        # bs.truncate((525e-9,540e-9))
         
-        fHz, pfft, _ = self.pulse.calc_fft()#rfft=True)
-        _ , sfft, _ = bs.calc_fft()#rfft=True)    # only want boresight signal
+        # print('bs size: ', bs.vdata.size)
+        # print('pulse size: ', self.pulse.vdata.size)
+        
+        fHz, pfft, _ = self.pulse.calc_fft()
+        _ , sfft, _ = bs.calc_fft()
+        
+        fCut = np.logical_and(-2e9 < fHz, fHz < 2e9)
+        fHz = fHz[fCut]
+        pfft = pfft[fCut]
+        sfft = sfft[fCut]
         
         print('bs fft: ', sfft.size)
         print('pfft: ', pfft.size)
@@ -263,7 +267,7 @@ class antenna_response:
         pos_dist = np.linspace(self.front_dist_m, self.back_dist_m, pos_size)
         neg_dist = np.linspace(self.back_dist_m, self.front_dist_m, int(fftsize/2))
         dist = np.append(neg_dist, pos_dist)
-        # dist = np.linspace(self.front_dist_m, self.back_dist_m, fftsize)
+        dist = np.linspace(self.front_dist_m, self.back_dist_m, fftsize)
         
         # the physical factor
         phys = (dist * c) / (1j * fHz)   # [m^2]
@@ -280,6 +284,7 @@ class antenna_response:
         
         fGHz_ordered = np.fft.fftshift(fHz)*1e-9
         fGHz_pos = fGHz_ordered[fGHz_ordered > 0]
+        # fGHz_pos = fHz * 1e-9
         
         lowband1 = np.logical_and( 0<=fGHz_pos, fGHz_pos<0.15 )
         lowband2 = np.logical_and( 0.15<=fGHz_pos, fGHz_pos<0.3 )
@@ -294,6 +299,7 @@ class antenna_response:
         above2 = np.ones(len(fGHz_pos[aboveband2]))
         
         snr_pos = np.hstack((below1, below2, within, above1, above2))
+        # snr = np.hstack((below1, below2, within, above1, above2))
         snr = np.hstack((snr_pos,np.flip(snr_pos)))
         
         print('snr: ', snr.size)
@@ -338,11 +344,13 @@ class antenna_response:
         ax = plt.subplots(figsize=(30,15))[1]
         ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfft)**2/50)), ls="--", lw=6, c='black',label="Simple Division")
         ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfftw)**2/50)), lw=6, c='black', label="Wiener Deconvolution")
+        # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfft)**2/50), ls="--", lw=6, c='black',label="Simple Division")
+        # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfftw)**2/50), lw=6, c='black', label="Wiener Deconvolution")
         ax.set(xlim=(0,None), xlabel="f [GHz]", ylabel=r"$10\log{$|fft|$^2/50}$ [dB]")
         ax.set_title(antennas.catalog[bs.Rx[0]] + " Impulse Response FFT")
         
-        pueoband = np.logical_and(0.3e9 < fHz, fHz < 1.2e9)
-        int_power = 2*np.sum(np.abs(IRfftw[pueoband])**2/50)#, dx=fHz[1]-fHz[0])#, x=fHz[pueoband])
+        pueoband = np.logical_and(0.3e9 < fHz, fHz < 0.7e9)
+        int_power = 2*np.sum(np.abs(IRfftw[pueoband])**2/50) / IRfftw[pueoband].size #, dx=fHz[1]-fHz[0])#, x=fHz[pueoband])
         
         dBmin, dBmax = ax.get_ylim()
         fmin, fmax = ax.get_xlim()
@@ -363,6 +371,7 @@ class antenna_response:
         IRfftw = np.insert(IRfftw, 0, 0)
         # print(IRfft)
         imp_resp = np.fft.fftshift(np.fft.ifft(IRfftw))
+        # imp_resp = np.fft.irfft(IRfftw)
         
         # -- Checking --
         
@@ -488,12 +497,22 @@ class antenna_response:
         else:
             for raw_data in data_waveforms:
                 raw_data.truncate(truncate)
+                
+        sample_waveform = data_waveforms[0]
+        if pulse and (self.signals is not None):
+            test_waveform = self.signals[0]
+            self._check_datarecord(sample_waveform, test_waveform.datasize, test_waveform.samplerate, 
+                                   location="antenna_response.set_data()", add='(Pulse vs Signals) Check pulse truncate window.')
+        elif signal and (self.pulse is not None):
+            test_waveform = self.pulse
+            self._check_datarecord(sample_waveform, test_waveform.datasize, test_waveform.samplerate, 
+                                   location="antenna_response.set_data()", add='(Signals vs Pulse) Check signal truncate window.')
         
         # tukey filtering
         if tukey_window == 'best':
             for raw_data in data_waveforms:
                 if pulse:
-                    raw_data.tukey_filter(time_window=raw_data.estimate_window(dt_ns=25, t_ns_offset=5))
+                    raw_data.tukey_filter(time_window=raw_data.estimate_window(dt_ns=25, t_ns_offset=7))
                 elif signal:
                     raw_data.tukey_filter(time_window=self.tukey_window)
                     
@@ -769,7 +788,7 @@ class antenna_response:
             warn('WARNING [{}]: Data "{}" frequency maximum of {} is less than PUEOs 1.2 GHz'.format(
                 location, data_label, fGHzmax) )
         
-    def _check_datarecord(self, data_waveform, test_size, test_samplerate, location="antenna_response"):
+    def _check_datarecord(self, data_waveform, test_size, test_samplerate, location="antenna_response", add=""):
         """
         Warn if a waveform's length or sample rate does not match with a test
         length or test sample rate.
@@ -785,6 +804,8 @@ class antenna_response:
         location : str, optional
             The function name to indicate where the warning is being raised.
             The default is the class name.
+        add : str, optional
+            Add a custom string to the end of the warning message.
 
         """
         
@@ -793,11 +814,11 @@ class antenna_response:
         label = data_waveform.label
         
         if data_size != test_size:
-            warn('WARNING [{}]: Data "{}" mismatching common size of {} instead of {}'.format(
-                location, label, data_size, test_size) )
+            warn('WARNING [{}]: Data "{}" mismatching common size of {} instead of {}. '.format(
+                location, label, data_size, test_size) + add)
         if test_samplerate != data_samplerate:
-            warn('WARNING [{}]: Data "{}" mismatching common sample rate of {} instead of {}'.format(
-                location, label, data_samplerate, test_samplerate) )
+            warn('WARNING [{}]: Data "{}" mismatching common sample rate of {} instead of {}. '.format(
+                location, label, data_samplerate, test_samplerate) + add)
 
 
 
