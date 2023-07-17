@@ -17,7 +17,7 @@ import os
 os.chdir(HERE)
 
 # functional imports
-from waveform import waveform
+from antennaData import antennaData
 import some_functions as sf
 import antennas
 
@@ -49,7 +49,7 @@ from warnings import warn
 class antenna_response:
     '''
     This class handles many gain-related calculations for a single horn to horn setup
-    at multiple angles. It requires data for both a pulse and signal(s).
+    at multiple angles. It requires both pulse and signal data.
     
     Parameters
     ----------
@@ -58,6 +58,10 @@ class antenna_response:
         only the first file is chosen as the pulse data.
     signal_paths : iterable[str or pathlib.Path]
         The full paths of the signal data.
+    distance : float or iterable(2)
+        The distance in meters between Rx and Tx. If an iterable of size 2 is given, the
+        distance will be linearly interpolated from the first number to the second.
+        This is usually to assign a distance between the front faces and the back panels.
     
     Attributes
     ----------
@@ -66,13 +70,13 @@ class antenna_response:
         only the first file is chosen as the pulse data.
     signal_paths : iterable[str or pathlib.Path]
         The full paths of the signal data.
-    pulse : waveform
+    pulse : antennaData
         The pulser waveform.
     angle_lim : tuple(2)
         The (min,max) angle limit in degrees for inclusion. The rest are ignored.
     angles : ndarray[int]
         The array of sorted angles.
-    signals : ndarray[waveform]
+    signals : ndarray[antennaData]
         The array containing signal waveforms, with sorting matched with angles.
     labels : list[str]
         The labels of every file, obtained by waveform.label.
@@ -84,24 +88,14 @@ class antenna_response:
         The (min,max) frequency limits in GHz for which all calculations are truncated by.
         This is by default set to the PUEO band (0.3,1.2) GHz in order to prevent
         outside interpolations in scipy.interpolate.interp1d.
-    boresight : ndarray[waveform]
-        The signal waveform corresponding to 0 degrees.
+    window : tuple(2)
+        The best truncation window for boresight data. This is recommended to be
+        applied to all of the signal waveforms.
     gains : ndarray[scipy.interpolate.interp1d]
         An array of gain interpolations as a function of frequency in Hz. These are
         sorted by angle, just like the signals.
-    boresight_gain : scipy.interpolate.interp1d
-        Like self.gains, but only containing the gain interpolation for angle 0 degrees.
     impulse_response : scipy.interpolate.interp1d
         The calculated impulse response of the boresight signal. THIS IS NOT YET COMPLETED.
-    boresight_window : tuple(2)
-        The best truncation window for boresight data. This is recommended to be
-        applied to all of the signal waveforms.
-    tukey_window : tuple(2)
-        The best Tukey window for filtering, based on the boresight signal. It is
-        a narrower window than the boresight window, 4ns before the voltage peak
-        and 15ns wide (values based on observation of previous data, but is not 
-        necessarily the best for all data). This is recommended to be applied
-        to all of the signal waveforms.
     
     Methods
     -------
@@ -116,7 +110,7 @@ class antenna_response:
         
     '''
     
-    def __init__(self, pulse_path, signal_paths):
+    def __init__(self, pulse_path, signal_paths, distance):
         
         self.pulse_path = pulse_path
         self.signal_paths = signal_paths
@@ -124,29 +118,27 @@ class antenna_response:
         self.pulse = None
         self.signals = None
         self.set_data(data='pulse')# --> self.pulse
-        self.set_data(data='signal', set_angles=self.angle_lim)# --> self.boresight, self.angles, self.signals
+        self.set_data(data='signal', set_angles=self.angle_lim)# --> self.angles, self.signals
         self.labels = [self.pulse.label] + [sig.label for sig in self.signals]
-        self.front_dist_m = 8.382
-        self.back_dist_m = 9.845
+        _distance = np.array(distance, ndmin=1, dtype=float)
+        if len(_distance) > 1:
+            self.front_dist_m = _distance[0]
+            self.back_dist_m = _distance[1]
+        else:
+            self.front_dist_m = _distance[0]
+            self.back_dist_m = _distance[0]
         self.bandGHz = (0.3,1.2)
         
         # -properties-
-        # self.boresight
+        # self.window
         # self.gains
-        # self.boresight_gain
         # self.impulse_response
     
     @property
-    def boresight(self):
-        return [sig for sig in self.signals if sig.angle == 0][0]
-    
-    @property
-    def boresight_window(self):# -> tuple(2)
-        return self.boresight.estimate_window()
-    
-    @property
-    def tukey_window(self):# -> tuple(2)
-        return self.boresight.estimate_window(dt_ns=16, t_ns_offset=5)
+    def window(self):# -> tuple(2)
+        # window based on boresight signal
+        boresight = self.signals[self.angles==0][0]
+        return boresight.estimate_window()
     
     @property
     def gains(self):# -> np.ndarray[interp1d]:
@@ -207,25 +199,22 @@ class antenna_response:
         # assuming all of the signals given are the same set up
         Tx = self.signals[0].Tx
         Rx = self.signals[0].Rx
+        port = self.signals[0].port
         same_antenna = Tx[0] == Rx[0]
+        if same_antenna:
+            Tx = Tx+port
         
         # gain calc depending on set up
-        if same_antenna:
-            _gains = [(sig_gain(fHz) - pul_gain(fHz) + friis_term) / 2 for sig_gain in sig_gains]
-        else:
-            _gains = [sig_gain(fHz) - pul_gain(fHz) + friis_term - antennas.gain[Tx[0]](fHz) for sig_gain in sig_gains]
-                
+        # if same_antenna:
+        #     warn("NOTICE [antenna_response.gains()]: Calculation for {} to {} is assuming the same gain.".format(Rx, Tx))
+        #     _gains = [(sig_gain(fHz) - pul_gain(fHz) + friis_term) / 2 for sig_gain in sig_gains]
+        # else:
+        # if same_antenna: tx_gain = antennas.gain[Tx+port](fHz) else antennas.gain[Tx](fHz)
+        _gains = [sig_gain(fHz) - pul_gain(fHz) + friis_term - antennas.gain[Tx](fHz) for sig_gain in sig_gains]
+        # note: same antenna gain calc only works for boresight, so just use this above to cover all cases    
+        
         # return list of gain interpolations sorted by file
         return np.asarray([interp1d(fHz, gain, assume_sorted=True, bounds_error=True) for gain in _gains])
-    
-    @property
-    def boresight_gain(self):# -> interp1d:
-        
-        # get gain for boresight only
-        boresight_idx = self.angles==0
-        gain = self.gains[boresight_idx][0]
-        
-        return gain
     
     @property
     def impulse_response(self) -> interp1d:
@@ -233,7 +222,7 @@ class antenna_response:
         warn("WARNING [antenna_response.impulse_response()]: THIS METHOD IS NOT YET COMPLETE.")
         
         # get pulser and signal, fHz should be the same for both (if same samplerate)
-        bs = self.boresight
+        bs = self.signals[self.angles==0][0]
         
         # print('bs size: ', bs.vdata.size)
         # print('pulse size: ', self.pulse.vdata.size)
@@ -347,7 +336,7 @@ class antenna_response:
         # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfft)**2/50), ls="--", lw=6, c='black',label="Simple Division")
         # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfftw)**2/50), lw=6, c='black', label="Wiener Deconvolution")
         ax.set(xlim=(0,None), xlabel="f [GHz]", ylabel=r"$10\log{$|fft|$^2/50}$ [dB]")
-        ax.set_title(antennas.catalog[bs.Rx[0]] + " Impulse Response FFT")
+        ax.set_title(bs.Rx + " Impulse Response FFT")
         
         pueoband = np.logical_and(0.3e9 < fHz, fHz < 0.7e9)
         int_power = 2*np.sum(np.abs(IRfftw[pueoband])**2/50) / IRfftw[pueoband].size #, dx=fHz[1]-fHz[0])#, x=fHz[pueoband])
@@ -378,7 +367,7 @@ class antenna_response:
         # stest = np.convolve(imp_resp, np.convolve(imp_resp, np.gradient(self.pulse.vdata), mode="same"), mode='same')[:-1] / phys
         # ax = plt.subplots(figsize=(30,15))[1]
         # ax.plot(bs.tdata[:-1], stest, label="Convolved")
-        # self.boresight[0].plot(ax=ax, label="Original")
+        # self.signals[self.angles==0][0].plot(ax=ax, label="Original")
         # ax.legend(loc="upper right")
         
         # --------------
@@ -389,7 +378,7 @@ class antenna_response:
     
     def plot_impulse_response(self, ax=None, **kwargs):
         
-        # bs = self.boresight[0]
+        # bs = self.signals[self.angles==0][0]
         
         # default plot kwargs
         title = kwargs.pop("title",self.signals[0].Rx + " Impulse Response")
@@ -403,13 +392,12 @@ class antenna_response:
         
         imp_resp_t = [dt*i*1e9-20 for i in range(len(imp_resp))]#np.linspace(0, 70, len(imp_resp))
         ax.plot(imp_resp_t, imp_resp, lw=6, **kwargs)#bs.tdata[:-1], imp_resp, lw=6)
-        ax.set(ylabel="Response [m/ns]", xlabel='t [ns]')
+        ax.set(ylabel="Response", xlabel='t [ns]')
         ax.set_title(title)
         # bs.plot(ax=ax)
-        # self.boresight[0].plot(ax=ax)
         # self.pulse.plot(ax=ax)
     
-    def set_data(self, data, truncate='best', tukey_window='best', set_angles=None) -> None:
+    def set_data(self, data, truncate='best', tukey_window='best', set_angles=None, zeropad=0) -> None:
         """
         Set and clean the data waveforms. Truncate and/or filter (Tukey).
 
@@ -446,11 +434,11 @@ class antenna_response:
         # set waveforms
         if pulse:
             del self.pulse
-            data_waveforms = np.array([waveform(path) for path in self.pulse_path])
+            data_waveforms = np.array([antennaData(path) for path in self.pulse_path])
             self.pulse = data_waveforms[0]
         elif signal:
             del self.signals
-            data_waveforms = np.array([waveform(path) for path in self.signal_paths])
+            data_waveforms = np.array([antennaData(path) for path in self.signal_paths])
             self.signals = data_waveforms
             
             # set angle limits if given
@@ -489,7 +477,7 @@ class antenna_response:
                 if pulse:
                     raw_data.truncate(raw_data.estimate_window())
                 elif signal:
-                    raw_data.truncate(self.boresight_window)
+                    raw_data.truncate(self.window)
                     
         elif truncate is None: # do nothing
             pass
@@ -514,7 +502,8 @@ class antenna_response:
                 if pulse:
                     raw_data.tukey_filter(time_window=raw_data.estimate_window(dt_ns=25, t_ns_offset=7))
                 elif signal:
-                    raw_data.tukey_filter(time_window=self.tukey_window)
+                    t_window = self.signals[self.angles==0][0].estimate_window(dt_ns=15, t_ns_offset=4)
+                    raw_data.tukey_filter(time_window=t_window)
                     
         elif tukey_window == 'full':
             if pulse:
@@ -528,6 +517,9 @@ class antenna_response:
         else:
             for raw_data in data_waveforms:
                 raw_data.tukey_filter(time_window=tukey_window)
+                
+        for raw_data in data_waveforms:
+            
         
         # set the data to the array containing the (cleaned) waveforms
         if pulse:
@@ -536,12 +528,13 @@ class antenna_response:
             self.signals = data_waveforms
 
             
-    def plot_boresight(self, fGHz=None, ax=None, **kwargs) -> None:
+    def plot_gain(self, angle=0, fGHz=None, ax=None, **kwargs) -> None:
         """
-        Plot the gain response [dB] vs frequency [GHz] of the boresight signal.
+        Plot the gain response [dB] vs frequency [GHz].
         
         Parameters
         ----------
+        angle : float
         fGHz : ndarray, optional
             The frequency domain array in GHz. If None, this defaults to the
             PUEO band in steps of 0.1 GHz.
@@ -555,17 +548,17 @@ class antenna_response:
         _fGHz = self._force_band(fGHz, 'antenna_response.plot_boresight()')
         
         # get the boresight waveform and gain
-        bs_waveform = self.boresight
-        bs_gain = self.boresight_gain
+        waveform = self.signals[self.angles==angle][0]
+        gain = self.gains[self.angles==angle][0]
         
         # handle plot instance
         ax = plt.subplots(figsize=[30,20])[1] if ax is None else ax
         
         # get the boresight gain prediction
-        predicted_gain = antennas.gain[bs_waveform.Rx[0]](_fGHz*1e9)
+        predicted_gain = antennas.gain[waveform.Rx+waveform.port](_fGHz*1e9)
         
         # for labeling purposes
-        antenna_name = antennas.catalog[bs_waveform.Rx[0]]
+        antenna_name = waveform.Rx+waveform.port
         
         # default plotting kwargs
         color = kwargs.pop("color","black")
@@ -575,20 +568,20 @@ class antenna_response:
         
         # plot predicted and calculated
         ax.plot(_fGHz, predicted_gain, lw=6, label='Predicted {}'.format(antenna_name))
-        ax.plot(_fGHz, bs_gain(_fGHz*1e9), label='Measured {}'.format(antenna_name),
+        ax.plot(_fGHz, gain(_fGHz*1e9), label='Measured {}'.format(antenna_name),
                 c=color, ls=ls, lw=lw, **kwargs)#marker='o',lw=6,ms=15)
         
         # plot settings
         ax.set(xlim=(0.3 - 0.05, 1.2 + 0.05), ylim=(0, 16.5),
                xlabel="freq [GHz]", ylabel='Gain [dB]')
-        title = " ".join([bs_waveform.date, bs_waveform.label])
+        title = " ".join([waveform.date, waveform.label])
         ax.set_title(title)
         legend = ax.legend(loc='lower right')
         for line in legend.get_lines(): 
             line.set_linewidth(15)
     
         # find and plot the mean of the residuals
-        delta = np.mean(bs_gain(_fGHz*1e9)-predicted_gain)
+        delta = np.mean(gain(_fGHz*1e9)-predicted_gain)
         ax.add_artist(AnchoredText("Mean residual: {:0.3} dB".format(delta), loc="lower left", frameon=True))
             
     
@@ -628,7 +621,7 @@ class antenna_response:
         
         # get a good title
         wf = self.signals[0]  # one of the signal waveforms, assuming they all share base names
-        title = " ".join([wf.date,wf.Tx,"to",wf.Rx,wf.pol,title_add])
+        title = " ".join([wf.date,wf.Tx,"to",wf.Rx,wf.port,wf.plane,title_add])
         
         # the plot object
         if polar:  # plotly much nicer for polar plots
@@ -699,16 +692,12 @@ class antenna_response:
         # set filename parts (assuming all the same set up)
         wf = self.signals[0]
         
-        plane = "E" if wf.pol[0] == "H" else "H" if wf.pol[0] == "V" else "ERROR"
-        if wf.ch == "Ch2":
-            plane += "X"
-        
-        antenna = antennas.catalog[wf.Rx[0]]
+        antenna = wf.Rx+wf.port
         
         # save to file
         for theta, gain in zip(self.angles, gains):
             
-            filename = str(savepath) + '/' + "_".join([antenna, str(theta), plane]) + '.txt'
+            filename = str(savepath) + '/' + "_".join([antenna, str(theta), wf.plane]) + '.txt'
             
             # filename existence checks
             if os.path.exists(filename):

@@ -146,11 +146,11 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
     # kwarg defaults
     polar = kwargs.pop('polar', 
                        dict(                                # polar setting
-                           sector = [0,180],                # set chart shape (half)
+                           sector = [0,360],                # set chart shape (half)
                            angularaxis = dict(              # angle axis settings
                                dtick = 10,                  # angle tick increment
                                rotation = 90,               # rotates data to be on upper half
-                               direction = "clockwise",     # -90 to 90 left to right
+                               direction = "counterclockwise",     # -90 to 90 right to left
                                tickfont=dict(size=20),      # angle tick size
                                ),
                            radialaxis=dict(                 # radial axis settings
@@ -171,7 +171,7 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
     
     width = kwargs.pop('width', 1100)                       # canvas width
     
-    height = kwargs.pop('height', 620)                      # canvas height
+    height = kwargs.pop('height', 820)                      # canvas height
     
     legend = kwargs.pop('legend',                           # legend settings
                         dict(                        
@@ -179,7 +179,7 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
                              xanchor="right",               # reference for x pos
                              x=1.05,                        # legend x pos percentage
                              yanchor="top",                 # reference for x pos
-                             y=0.95,                        # legend y pos percentage
+                             y=0.98,                        # legend y pos percentage
                              font=dict(size=20),            # font size
                              itemsizing='constant',         # symbol size to not depend on data traces
                              itemwidth=30,                  # symbol size
@@ -188,9 +188,9 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
     
     margin = kwargs.pop('margin',                           # margins
                         dict(                               
-                            b=0,
-                            t=0,
-                            l=70,
+                            b=30,
+                            t=70,
+                            l=20,
                             r=60,
                             ),
                         )
@@ -201,7 +201,7 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
                            x = 0.03,                        # title position
                            y = 0.98,
                            font=dict(
-                               size = 28,                   # title font size
+                               size = 24,                   # title font size
                                ),
                            ),
                        )

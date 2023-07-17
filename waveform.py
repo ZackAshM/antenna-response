@@ -2,9 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 A class to handle all relevant things waveform related (V vs s output from 
-oscilloscope data). 
+oscilloscope data).
 
 Created on Fri Aug 19 03:18:41 2022
+
+Updated 2023 05 14
+This class is now filename independent. All measurement set up and file name
+parsing should be handled by the antennaData class.
 
 @author: zackashm
 """
@@ -12,12 +16,11 @@ Created on Fri Aug 19 03:18:41 2022
 # i like pathlib's path handling
 from pathlib import Path, PosixPath
 
-import some_functions as sf
-
 # functional imports
 import numpy as np
 import pandas as pd
 from numpy.fft import fft as FFT, fftfreq as FFTfreq, rfft as rFFT, rfftfreq as rFFTfreq
+from scipy.signal import resample
 
 # plotting imports
 import matplotlib.pyplot as plt
@@ -37,7 +40,8 @@ from warnings import warn
 class waveform:
     '''
     Handles oscilloscope output data (assuming volts in V and time in seconds) for
-    a single waveform.
+    a single waveform. Oscilloscope output format is assumed to have columns
+    3 and 4 be the x and y axes respectively.
     
     Parameters
     ----------
@@ -48,28 +52,8 @@ class waveform:
     ----------
     path : pathlib.Path
         The full path of the file.
-    date : str
-        The str of the data date (assuming the data parent directory is the date).
     name : str
         The data file name.
-    pulse : bool
-        True if the data is pulser data, with "PULSE" in the file name.
-    Tx : str
-        File name part referring to the transmitting antenna.
-    Rx : str
-        File name part referring to the receiving antenna.
-    pol : str
-        File name part referring to the polarization.
-    descriptor : str
-        File name part referring to an optional descriptor.
-    angle_str : str
-        File name part referring to the angle.
-    angle : int
-        The angle in the file name converted from a string to a number.
-    trial : str
-        File name part referring to the trial number.
-    ch : str
-        The scope channel of the data.
     vcol : str
         The voltage column label.
     tcol : str
@@ -80,20 +64,21 @@ class waveform:
         If filtered using tukey_filter, this is the array of the filter array
         in the data time domain.
     vdata : numpy.ndarray
-        The voltage data array in volts.
+        The voltage data array in volts. Can be assigned manually after creating 
+        an instance of this class.
     tdata : numpy.ndarray
-        The time data array in seconds.
+        The time data array in seconds. Can be assigned manually after creating 
+        an instance of this class.
     datasize : np.int64
-        The size of the data, assumed to be based on vdata.
+        The size of the data, assuming vdata and tdata sizes are equal.
     samplerate : np.float64
         The samplerate of the data, determined by the mean of the stepsizes in tdata.
-    label : str
-        Return a label for the waveform based on the file name. Format:
-        "Tx to Rx pol (descriptor) angle"
-        If self.pulse is True, then this is just "{DEVICE} PULSE"
     
     Methods
     -------
+    resample
+        Resample the waveform to match a given samplerate. Be warned, this will 
+        keep the same time domain, but consequently affect the length of the data.
     truncate
         Truncates the time and voltage data to a given time window.
     estimate_window
@@ -110,14 +95,11 @@ class waveform:
     
     '''
     
-    def __init__(self, path, parse_name=True):
+    def __init__(self, path):
         
         # parse filename info
         self.path = Path(path).resolve() if type(path) != PosixPath else path
-        self.date = str(self.path).split("/")[-2]
         self.name = self.path.name
-        if parse_name:
-            self._parse_filename() # --> self.pulse, self.Tx, self.Rx, self.pol, self.descriptor, self.angle_str, self.angle, self.trial, self.ch
         
         # assumes oscilloscope data, [V,t] on columns [3,4] with units [volts, seconds]
         self.vcol = "V [V]"
@@ -132,7 +114,6 @@ class waveform:
         # self.tdata
         # self.datasize
         # self.samplerate
-        # self.label
         
 
         
@@ -140,13 +121,23 @@ class waveform:
     def vdata(self) -> np.ndarray:
         return self.data[self.vcol].values
     
+    # allow assignment of new/custom vdata
     @vdata.setter
     def vdata(self, new_v: np.ndarray):
+        if new_v.size != self.tdata.size:
+            warn("WARNING: Newly assigned vdata does not match size of current tdata.")
         self.data[self.vcol] = new_v
     
     @property
     def tdata(self) -> np.ndarray:
         return self.data[self.tcol].values
+    
+    # allow assignment of new/custom tdata
+    @tdata.setter
+    def tdata(self, new_t: np.ndarray):
+        if new_t.size != self.vdata.size:
+            warn("WARNING: Newly assigned tdata does not match size of current vdata.")
+        self.data[self.tcol] = new_t
     
     @property
     def datasize(self) -> np.int64:
@@ -154,53 +145,42 @@ class waveform:
     
     @property
     def samplerate(self) -> np.float64:
-        mean_stepsize = np.mean([np.abs(self.tdata[i+1] - self.tdata[i]) for i in range(self.datasize-1)])
+        mean_stepsize = np.mean(np.diff(self.tdata))
         return float('{:0.5e}'.format(mean_stepsize))  # round to a reasonable number
     
-    @property
-    def label(self) -> str:
-        if self.pulse:
-            return self.descriptor
-        if self.descriptor:
-            return " ".join([self.Tx,"to",self.Rx,self.pol,self.descriptor,str(self.angle)+r'$\degree$'])
-        else:
-            return " ".join([self.Tx,"to",self.Rx,self.pol,str(self.angle)+r'$\degree$'])
+    # Public Methods
+    # --------------
     
-    # attribute setter for self.pulse, self.Tx, self.Rx, self.pol, self.descriptor, self.angle_str, self.angle, self.trial
-    def _parse_filename(self):
+    def resample(self, new_samplerate) -> None:
         '''
-        Based on the filename convention
-        {transmitter}_to_{receiver}_{polarization}_{optional descriptor}_{angle}_{trial}_{scope channel}.csv
-        set each parameter as an attribute to the waveform.
-        If the data is a pulser data, then assume format
-        {DEVICE}_PULSE_{optional descriptor}_{trial}
-        and only set the waveform class' self.descriptor to be {DEVICE}_PULSE and trial.
+        Resample the vdata. The tdata will retain the range, and thus the length
+        of the data may change from resampling.
+        
+        Parameters
+        ----------
+        new_samplerate : float
+            The samplerate to force the data to follow.
+        
+        Returns
+        -------
+        None
+        
         '''
+        new_sampling = float('{:0.5e}'.format(new_samplerate))
         
-        parts = self.name.split("_")
+        # Calculate the resampling ratio
+        resampling_ratio = self.samplerate / new_sampling
         
-        self.pulse = ('PULSE' in parts) or ('PULSER' in parts)   # this is pulser data
-        if self.pulse:
-            self.Tx = ""
-            self.Rx = ""
-            self.pol = ""
-            self.descriptor = " ".join(parts[:2])
-            self.angle_str = ""
-            self.angle = ""
-            self.trial = parts[-2]
-            self.ch = ""
-            
-        else:                           # this is signal data
-            self.Tx = parts[0]
-            self.Rx = parts[2]
-            self.pol = parts[3]
-            self.descriptor = parts[4] if len(parts) == 8 else ""
-            self.angle_str = parts[-3]
-            self.angle = -1*int(self.angle_str[3:]) if "NEG" in self.angle_str else int(self.angle_str)
-            self.trial = parts[-2]
-            self.ch = parts[-1][:3]
+        # Resample the vdata using scipy.signal.resample
+        resampled_vdata = resample(self.vdata, int(len(self.vdata) * resampling_ratio))
+        
+        # Create the resampled time array
+        resampled_tdata = np.linspace(self.tdata[0], self.tdata[-1], num=len(resampled_vdata))
+        
+        self.vdata = resampled_vdata
+        self.tdata = resampled_tdata
+        
     
-    # - Methods -
     def truncate(self, window: tuple, zeropad: int = 0) -> None:
         '''
         Truncate the waveform in time domain.
@@ -243,7 +223,7 @@ class waveform:
     # We can use this instead of having to find the window manually every time.
     # The default window length and offset we chosen based on the worst case
     # scenarios (largest angles waveforms) without jeopardizing 'cleaner' waveforms.
-    def estimate_window(self, dt_ns: int = 70, t_ns_offset: float = 20) -> tuple:
+    def estimate_window(self, dt_ns: int = 44, t_ns_offset: float = 4) -> tuple:
         '''
         Give a best estimate for a time domain window containing the pulse of the waveform.
 
@@ -263,7 +243,7 @@ class waveform:
         # get the index of the voltage peak
         v = self._rawdata[self.vcol].values
         t = self._rawdata[self.tcol].values
-        peak_ind = (np.abs(v - np.max(np.abs(v)))).argmin()
+        peak_ind = (v**2).argmax()
         
         # determine the window min and max
         tmin = t[peak_ind] - t_ns_offset*1e-9
@@ -299,7 +279,7 @@ class waveform:
             window_t0 = time_window[0]
         
         # get the filter values in (0,1) domain
-        tukey = sf.tukey_window(window_size, r=r)
+        tukey = self._tukey_window(window_size, r=r)
         
         # define the array holding the filter values in the time domain
         filtering = np.zeros(self.datasize)
@@ -320,7 +300,7 @@ class waveform:
         # filter the vdata
         self.vdata *= filtering
         
-        # return the filtering in the time domain in case its needed (i.e. plotting)
+        # return the filtering in the time domain in case it's needed (i.e. plotting)
         self.filter = filtering
         
     
@@ -498,6 +478,10 @@ class waveform:
         if legend:
             ax.legend(loc='upper right')
             
+            
+    # Private Methods
+    # ---------------
+            
     # zero pad the waveform (to be used when truncating)
     def _zeropad(self, size=4):
         '''
@@ -527,6 +511,27 @@ class waveform:
         # set this object's data to the padded dataframe
         self.data = pd.concat((self.data,padding), ignore_index=True)
         
+    # for filtering using a tukey window
+    def _tukey_window(self, size, r=0.5):
+        '''
+        Defines the Tukey window filter.
+        '''
+
+        # define the window and domain
+        w = np.zeros(size)
+        x = np.linspace(0, 1, size, endpoint=True)
+        
+        # define the piecewise function
+        left = np.logical_and(0 <= x, x < r/2)
+        middle = np.logical_and(r/2 <= x, x < 1 - r/2)
+        right = np.logical_and(1 - r/2 <= x, x <= 1)
+        
+        w[left] = 0.5 * ( 1 + np.cos( (2*np.pi / r) * (x[left] - r/2) ) )
+        w[middle] = 1
+        w[right] = 0.5 * ( 1 + np.cos( (2*np.pi / r) * (x[right] - 1 + r/2) ) )
+
+        # return the window
+        return w
     
     # check power is conserved after FFT
     def _check_parseval(self, rfft: bool = True) -> None:
@@ -576,25 +581,15 @@ class waveform:
         
 # EXAMPLE
 # foo = waveform("Data/20220818/R2A_TO_R3A_VPOL_NEG10_01_Ch1.csv")
-# print(foo.date)
 # print(foo.path)
 # print(foo.vcol)
 # print(foo.tcol)
 # print(foo.data)
 # print(foo.name)
-# print(foo.Tx)
-# print(foo.Rx)
-# print(foo.pol)
-# print(foo.descriptor)
-# print(foo.angle_str)
-# print(foo.angle)
-# print(foo.trial)
-# print(foo.ch)
 # print(foo.vdata)
 # print(foo.tdata)
 # print(foo.datasize)
 # print(foo.samplerate)
-# print(foo.label)
 # foo.truncate(foo.estimate_window())
 # foo.plot(tscale=1e9, vscale=1e3)
 # foo.plot_fft(fscale=1e-9, flim=(0.1,2), dBlim=(-80,-10))
