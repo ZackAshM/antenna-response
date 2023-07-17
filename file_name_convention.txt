@@ -1,42 +1,35 @@
 Naming convention for data files for compatibility with plotting scripts
 
-Updated (as of): 2022 08 29
+Updated (as of): 2023 07 17
 
-Naming: {transmitter}_to_{receiver}_{polarization}_{optional descriptor}_{angle}_{trial} (_{scope channel}.csv)
+Naming: {transmitter}_{receiver}_{port}_{plane}_{angle}(_{scope channel}.csv)
 The portion in parenthesis is filled in by the scope automatically.
 
-If pulser data: {DEVICE}_PULSE_{optional descriptor}_{trial} (_{scope channel}.csv)
-DEVICE = AVTECH, FID
+If pulser data: {device}_{"pulser"/"pulse"}_{optional descriptor}_{trial} (_{scope channel}.csv)
+device = fid, avtech
 Optional descriptor = examples: 1CABLE, 2CABLES, or the date
 
 Transmitter, Receiver:
 - "UCLA" = UCLA calibrated horn
+- "UCHI" = UChicago calibrated horn
 - "R1A" = RFSpin Antenna 1 Port A
 - "R2B" = RFSpin Antenna 2 Port B
 - etc.
 - "T1A" = Toyon Antenna 1 Port A
 - etc.
 
-Polarizations:
-- "HPOL" = receiver and transmitter connected to horizontal port
-- "VPOL" = receiver and transmitter connected to vertical port
-- "XPOL" = cross pol measurement; receiver and transmitter pols perpendicular [Not needed if separated by scope channel, i.e. if measured same time as other port]
+Port:
+- A or B (on the Receiving antenna)
 
-Optional Descriptors: (examples)
-- "NOFOAM" = no foam
-- "LONGFOAM" = only long boxes of foam used (aka partial foam coverage)
-- "FULLFOAM" = all boxes of foam used ('full' coverage)
-- "VTILT" or "ZE" = Vertical Tilt / Zenith / Antenna pitch angles
+Plane:
+Note: the physical set up does not allow 360 deg rotation in elevation, hence all rotations are in the plane parallel to the ground. This forces the swept planes to be dependent on the polarization of the transmitter.
+- E if transmitter is horizontally polarized (Defintion: the main port's swept plane is parallel to polarization of transmitter)
+- H if the transmitter is vertically polarized (Definition: the main port's swept plane is perpendicular to the polarization of the transmitter)
 
 Angle:
 - Integer only
-- For negative angles, use "NEG"
+- For negative angles, use "NEG", i.e. NEG30
 
-Trial:
-- For record keeping multiple takes
-- Move 'bad' trials out of the data directory
-
-Note on Plane:
-E = rotation plane is perpendicular to the polarization
-H = rotation plane is parallel to the polarization
-Currently (2022 08 22), the horns get rotated to take both planes. For this reason, "HPOL" refers to an E-Plane measurement in Ch1, and "VPOL" refers to an H-Plane measurement in Ch1. Ch2 will refer to the XPOL. 
+Note:
+Both ports are fed into the oscilloscope during measurement. The reported port in the filename is the port which matches the transmitter polarization and this data is fed into Ch1 of the scope. The perpedicular port is fed into Ch2. Therefore, Ch2 is the XPol measurement.
+Ch3 is the signal from the function generator which is used to trigger the scope and the pulser.
