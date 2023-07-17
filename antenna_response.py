@@ -398,7 +398,7 @@ class antenna_response:
         # bs.plot(ax=ax)
         # self.pulse.plot(ax=ax)
     
-    def set_data(self, data, truncate='best', tukey_window='best', set_angles=None, zeropad=0) -> None:
+    def set_data(self, data, truncate='best', tukey_window='best', set_angles=None) -> None:
         """
         Set and clean the data waveforms. Truncate and/or filter (Tukey).
 
@@ -518,10 +518,7 @@ class antenna_response:
         else:
             for raw_data in data_waveforms:
                 raw_data.tukey_filter(time_window=tukey_window)
-                
-        for raw_data in data_waveforms:
-            
-        
+
         # set the data to the array containing the (cleaned) waveforms
         if pulse:
             self.pulse = data_waveforms[0]

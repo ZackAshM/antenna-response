@@ -132,7 +132,7 @@ class antennaData(waveform):
         {transmitter}_{receiver}_{port}_{plane}_{angle}_{scope channel}.csv
         set each parameter as an attribute to the waveform.
         If the data is a pulser data, then assume format
-        {DEVICE}_PULSER_{Description}.
+        {DEVICE}_pulser_{Description}.
         '''
         
         parts = self.name.split("_")

@@ -92,8 +92,8 @@ print("Signal path(s) found: \n", SIGNAL_PATHS)
 # set to true whatever you want to get
 TESTING = 0
 WAVEFORMS = 0
-BORESIGHT = 0
-BEAMPATTERN = 1
+BORESIGHT = 1
+BEAMPATTERN = 0
 IMPULSE_RESP = 0
 
 # TESTING
