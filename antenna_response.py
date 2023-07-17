@@ -584,7 +584,7 @@ class antenna_response:
             
     
     def plot_beampattern(self, fGHz=None, polar=True, plot_object=None, dBlim=(None,None),
-                         label_add='', title_add='', **kwargs):
+                         label_add='', title_add='', close_gap=False, **kwargs):
         """
         Plot the beampattern of the signals, the gain response [dB] vs angle [degree]
         at select frequencies of interest.
@@ -608,6 +608,8 @@ class antenna_response:
             This is added to the frequency labels in the legend if needed.
         title_add : str
             This is added to the plot title if needed.
+        close_gap : bool
+            Connect the first and last points. Default is False.
         **kwargs
             If polar is True, this is plotly.Figure.update_layout() kwargs. 
             Otherwise, this is matplotlib.Axes.plot() kwargs.
@@ -650,20 +652,24 @@ class antenna_response:
             
             # get the gains
             gains = np.asarray([gain(fGHz*1e9) for gain in self.gains])
+            angles = self.angles
+            if close_gap:
+                gains = np.append(gains, gains[0])
+                angles = np.append(self.angles, self.angles[0])
             
             # and plot
             if polar:
                 fig.add_trace(
                     go.Scatterpolar(
                         r = gains,
-                        theta = self.angles,
+                        theta = angles,
                         mode = 'lines+markers',
                         name = '{:.1f} GHz {}'.format(fGHz,label_add),
-                        marker=dict(symbol='0',size=8,opacity=1)
+                        marker=dict(symbol='0',size=8,opacity=1),
                         )
                     )
             else:
-                ax.plot(self.angles, gains, ls='-', marker="o", lw=4, ms=13, 
+                ax.plot(angles, gains, ls='-', marker="o", lw=4, ms=13, 
                         label='{:.1f} GHz {}'.format(fGHz,label_add), **kwargs)
         
         # plot settings
