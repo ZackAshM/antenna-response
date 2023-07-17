@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Uses waveform class to manipulate and compare multiple waveform data to pulse data.
+Uses antennaData objects from pulser data and receiving data in order to determine 
+properties such as gain and impulse response of the receiving antenna.
 
 Created on Fri Aug 19 07:38:58 2022
 
