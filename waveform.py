@@ -42,102 +42,116 @@ class waveform:
     Handles oscilloscope output data (assuming volts in V and time in seconds) for
     a single waveform. Oscilloscope output format is assumed to have columns
     3 and 4 be the x and y axes respectively.
+    To avoid different FFT effects on data length, the waveform is kept at an odd 
+    length.
     
     Parameters
     ----------
     path : str or pathlib.Path
-        The file path containing the csv data.
+        Provide data via file path containing the csv data.
+    data : pandas.DataFrame
+        Provide data via pandas DataFrame.
         
     Attributes
     ----------
     path : pathlib.Path
-        The full path of the file.
+        The full path of the file if path given.
     name : str
-        The data file name.
+        The data file name if path given.
     vcol : str
         The voltage column label.
     tcol : str
         The time column label.
     data : pandas.Dataframe
-        A Dataframe of the data with column names matching tcol and vcol.
+        A DataFrame of the data with column names matching tcol and vcol.
     filter : numpy.ndarray
-        If filtered using tukey_filter, this is the array of the filter array
-        in the data time domain.
+        If filtered using tukey_filter, this is the filter array in the time domain.
     vdata : numpy.ndarray
-        The voltage data array in volts. Can be assigned manually after creating 
-        an instance of this class.
+        The voltage data array. Volts is assumed.
     tdata : numpy.ndarray
-        The time data array in seconds. Can be assigned manually after creating 
-        an instance of this class.
+        The time data array. Seconds is assumed.
     datasize : np.int64
-        The size of the data, assuming vdata and tdata sizes are equal.
+        The size of the data. vdata and tdata sizes are assumed equal.
     samplerate : np.float64
-        The samplerate of the data, determined by the mean of the stepsizes in tdata.
+        The sample rate of the data in samples per second. Mean sample spacing
+        is used.
     
     Methods
     -------
+    reset
+        Restore the waveform back to its original initialization, before any 
+        manipulations.
+    zeromean
+        Zero mean the data by bringing the average noise level offset to 0.
     resample
-        Resample the waveform to match a given samplerate. Be warned, this will 
-        keep the same time domain, but consequently affect the length of the data.
+        Resample the waveform to match a given constant sample rate.
     truncate
         Truncates the time and voltage data to a given time window.
-    estimate_window
-        Returns a time domain window based on the voltage peak, with the goal
-        to encapsulate the whole pulse. This will usually be fed into self.truncate.
     tukey_filter
         Filter the voltage data based on a Tukey filter in a given time window.
+    zeropad
+        Zeropad the vdata (extends the tdata).
+    estimate_window
+        Returns a time domain window based on the voltage peak, with the goal
+        to encapsulate the whole pulse. Typically fed into self.truncate.
+    clean
+        A quick data clean. Zeromean, truncate, filter, and zeropad the waveform.
+    plot
+        Plot the waveform in the time domain.
     calc_fft -> tuple[np.ndarray,np.ndarray,np.ndarray]
         Calculates and returns the FFT (frequency [Hz], voltage [V], power [dB]).
-    plot
-        Plot the voltage vs time waveform.
     plot_fft
         Plot the voltage vs frequency FFT.
     
     '''
     
-    def __init__(self, path):
+    def __init__(self, path=None, data=None):
         
-        # parse filename info
-        self.path = Path(path).resolve() if type(path) != PosixPath else path
-        self.name = self.path.name
-        
-        # assumes oscilloscope data, [V,t] on columns [3,4] with units [volts, seconds]
+        # set data columns
         self.vcol = "V [V]"
         self.tcol = "time [s]"
-        self._rawdata = pd.read_csv(self.path, names=[self.tcol, self.vcol], 
-                                    usecols=[3,4], dtype={self.tcol:np.float64,self.vcol:np.float64})
-        self.data = self._rawdata.copy()  # in cases of data manipulation to keep rawdata untouched
+        
+        # default data
+        self._RAWDATA = pd.DataFrame({self.tcol:[0], self.vcol:[0]}, dtype=np.float64)
+        
+        # first try path
+        if path is not None:
+            # parse filename info
+            self.path = Path(path).resolve() if type(path) != PosixPath else path
+            self.name = self.path.name
+            
+            # assumes oscilloscope data, [V,t] on columns [3,4] with units [volts, seconds]
+            self._RAWDATA = pd.read_csv(self.path, names=[self.tcol, self.vcol], 
+                                        usecols=[3,4], dtype={self.tcol:np.float64,self.vcol:np.float64})
+        else:
+            self.path = ""
+            self.name = ""
+        
+        # then try input data
+        if data is not None:
+            self._RAWDATA = data    # overwrites if both data and path given
+            self.tcol = data.columns[0]
+            self.vcol = data.columns[1]
+        
+        # set data
+        self.data = self._RAWDATA.copy()  # in cases of data manipulation to keep rawdata untouched
         self.filter = None
+        self._keep_odd()
         
         # -properties-
         # self.vdata
         # self.tdata
         # self.datasize
         # self.samplerate
-        
 
         
     @property
     def vdata(self) -> np.ndarray:
         return self.data[self.vcol].values
     
-    # allow assignment of new/custom vdata
-    @vdata.setter
-    def vdata(self, new_v: np.ndarray):
-        if new_v.size != self.tdata.size:
-            warn("WARNING: Newly assigned vdata does not match size of current tdata.")
-        self.data[self.vcol] = new_v
-    
     @property
     def tdata(self) -> np.ndarray:
         return self.data[self.tcol].values
-    
-    # allow assignment of new/custom tdata
-    @tdata.setter
-    def tdata(self, new_t: np.ndarray):
-        if new_t.size != self.vdata.size:
-            warn("WARNING: Newly assigned tdata does not match size of current vdata.")
-        self.data[self.tcol] = new_t
     
     @property
     def datasize(self) -> np.int64:
@@ -145,12 +159,73 @@ class waveform:
     
     @property
     def samplerate(self) -> np.float64:
-        mean_stepsize = np.mean(np.diff(self.tdata))
-        return float('{:0.5e}'.format(mean_stepsize))  # round to a reasonable number
+        mean_stepsize = np.diff(self.tdata).mean()
+        return np.float64('{:0.5e}'.format(1. / mean_stepsize))  # round to a reasonable number
     
     # Public Methods
     # --------------
     
+    def reset(self) -> None:
+        '''
+        Restore the waveform back to its original initialization, before any manipulations.
+
+        Returns
+        -------
+        None
+        
+        '''
+        del self.data
+        del self.filter 
+        
+        self.data = self._RAWDATA.copy()
+        self.filter = None
+        self._keep_odd()
+        
+    def zeromean(self, noise_window_ns='best'):
+        '''
+        Zero mean the data by bringing the average noise level offset to 0.
+        
+        Parameters
+        ----------
+        noise_window_ns : 'best', tuple(2), optional
+            The time window in ns containing just noise which to calculate the mean offset.
+            If 'best', the window will be estimated based on the longest tail end
+            of the data relative to the peak.
+            
+        Returns
+        -------
+        None
+        
+        '''
+        
+        v = self.vdata
+        t = self.tdata
+        
+        if noise_window_ns == 'best':
+            
+            # get the index of the voltage peak
+            peak_ind = (v**2).argmax()
+            
+            # noise sampling window 5% of total length
+            window_size = int(0.05 * self.datasize)
+            
+            # get noise offset using window at longest tail end
+            tailsize = int(self.datasize - peak_ind)
+            noise_offset = v[:window_size].mean() if peak_ind > tailsize else v[-1*window_size:].mean()
+            
+        else:
+            
+            # set the time limits
+            t_min, t_max = noise_window_ns
+            bounds = np.logical_and(t_min < t, t < t_max)
+            
+            noise_offset = v[bounds].mean()
+            
+        # zeromean
+        self.data[self.vcol] += -1*noise_offset
+            
+    # NOTE: currently, resampling will change the amplitude of the FFT. Not sure why. I don't know if the
+    # change is consistent for all signals, so I don't know if it's fine to use when calculating antenna responses.
     def resample(self, new_samplerate) -> None:
         '''
         Resample the vdata. The tdata will retain the range, and thus the length
@@ -159,108 +234,75 @@ class waveform:
         Parameters
         ----------
         new_samplerate : float
-            The samplerate to force the data to follow.
+            The samplerate to force the data to follow in samples per second.
         
         Returns
         -------
         None
         
         '''
+        
+        v = self.vdata 
+        t = self.tdata
         new_sampling = float('{:0.5e}'.format(new_samplerate))
         
         # Calculate the resampling ratio
-        resampling_ratio = self.samplerate / new_sampling
+        resampling_ratio = new_sampling / self.samplerate
         
-        # Resample the vdata using scipy.signal.resample
-        resampled_vdata = resample(self.vdata, int(len(self.vdata) * resampling_ratio))
+        # resample
+        resampled_vdata, resampled_tdata = resample(v, int(len(self.vdata) * resampling_ratio), t)
         
-        # Create the resampled time array
-        resampled_tdata = np.linspace(self.tdata[0], self.tdata[-1], num=len(resampled_vdata))
+        # set to resampled data
+        del self.data
+        self.data = pd.DataFrame({self.tcol : resampled_tdata, self.vcol : resampled_vdata}, 
+                                 dtype=np.float64)
         
-        self.vdata = resampled_vdata
-        self.tdata = resampled_tdata
-        
+        self._keep_odd()
     
-    def truncate(self, window: tuple, zeropad: int = 0) -> None:
+    def truncate(self, t_ns_window: tuple) -> None:
         '''
         Truncate the waveform in time domain.
 
         Parameters
         ----------
-        window : tuple
+        t_ns_window : tuple
             The time domain window (tmin, tmax) in seconds to truncate the waveform
             instance's self.data.
-        zeropad : int
-            Zeropad the voltage data with the given length, appended at the end of 
-            the data.
         
         Returns
         -------
         None
         
         '''
-        
-        # don't mess up the original data
-        rawdata = self._rawdata.copy()
-        
+    
         # set the time limits
-        t_min, t_max = window
-        bounds = np.logical_and(t_min < rawdata[self.tcol], rawdata[self.tcol] < t_max)
+        t = self.tdata
+        t_min, t_max = t_ns_window
+        bounds = np.logical_and(t_min < t, t < t_max)
+        
+        # truncate filter if there is one
+        if self.filter is not None:
+            self.filter = self.filter[bounds]
         
         # overwrite instance self.data
-        self.data = rawdata[bounds].reset_index(drop=True)
+        self.data = self.data[bounds].reset_index(drop=True)
         
-        # zeropad the end
-        if zeropad > 0:
-            self._zeropad(size=zeropad)
-        elif zeropad < 0:
-            raise ValueError("Error [waveform.truncate()]: zeropad cannot be negative.")
-            
-        # for easy FFT'ing, just make it odd length (drop last row if even size)
-        if self.vdata.size % 2 == 0: # even
-            self.data.drop(self.data.tail(1).index, inplace=True)
+        self._keep_odd()
         
-    # We can use this instead of having to find the window manually every time.
-    # The default window length and offset we chosen based on the worst case
-    # scenarios (largest angles waveforms) without jeopardizing 'cleaner' waveforms.
-    def estimate_window(self, dt_ns: int = 44, t_ns_offset: float = 4) -> tuple:
-        '''
-        Give a best estimate for a time domain window containing the pulse of the waveform.
-
-        Parameters
-        ----------
-        dt_ns : int
-            The window time length in nanoseconds. The default is 70.
-        t_ns_offset : float
-            The window time offset (to the left) in nanoseonds from the time of the voltage peak.
-
-        Returns
-        -------
-        (tmin,tmax) : tuple(2)
-            The time min and max of the window.
-        '''
-        
-        # get the index of the voltage peak
-        v = self._rawdata[self.vcol].values
-        t = self._rawdata[self.tcol].values
-        peak_ind = (v**2).argmax()
-        
-        # determine the window min and max
-        tmin = t[peak_ind] - t_ns_offset*1e-9
-        tmax = tmin + dt_ns*1e-9
-        
-        return (tmin,tmax)
-    
-    def tukey_filter(self, time_window=None, r=0.5):
+    def tukey_filter(self, t_ns_window=None, peak_width_ns=50, r=0.5) -> None:
         """
         Filter vdata using a Tukey filter w/ parameter r at a given time window.
 
         Parameters
         ----------
-        time_window : tuple(2), 'peak', optional
-            The (t_initial, t_final) window location in seconds. By default (None), 
-            the full time range is used (although this is usually not particularly a 
-            useful choice other than zeroing the ends).
+        t_ns_window : tuple(2), 'peak', optional
+            The (t_initial, t_final) window location in nanoseconds. If 'peak', a window
+            centered at the signal peak is used, the width is given by peak_width_ns. By 
+            default (None), the full time range is used (although this is usually not 
+            particularly a useful choice other than zeroing the ends).
+        peak_width_ns : float
+            If t_ns_window is 'peak' this is the width of the window in nanoseconds centered 
+            at the peak.
         r : TYPE, optional
             A parameter defining the edge of filter (see Tukey window). The default is 0.5.
 
@@ -270,26 +312,41 @@ class waveform:
 
         """
         
+        dt = 1. / self.samplerate
+        t = self.tdata
+        
         # handle the filter window
-        if time_window is None:     # full time range by default
+        if t_ns_window is None:     # full time range by default
             window_size = self.datasize
-            window_t0 = self.tdata[0]
+            window_t0 = t[0]
+            window_tf = t[-1]
+        elif t_ns_window == 'peak':
+            vraw = self._RAWDATA[self.vcol].values
+            traw = self._RAWDATA[self.tcol].values
+            peak_ind = (vraw**2).argmax()
+            window_t0 = traw[peak_ind] - peak_width_ns*1e-9/2
+            window_tf = traw[peak_ind] + peak_width_ns*1e-9/2
+            window_size = np.int64( (window_tf - window_t0) / dt )
         else:
-            window_size = np.int64( (time_window[1] - time_window[0]) / self.samplerate )
-            window_t0 = time_window[0]
+            window_size = np.int64( (t_ns_window[1] - t_ns_window[0]) * 1e-9 / dt )
+            window_t0 = t_ns_window[0]
+            window_tf = t_ns_window[1]
         
         # get the filter values in (0,1) domain
         tukey = self._tukey_window(window_size, r=r)
         
+        # extend time domain to fit window
+        min_t = min(window_t0, t[0])
+        max_t = max(window_tf, t[-1])
+        filt_t = np.arange(min_t, max_t+dt, dt)
+            
         # define the array holding the filter values in the time domain
-        filtering = np.zeros(self.datasize)
+        filtering = np.zeros(filt_t.size)
         
-        
-        # TO-DO: make so that windowing can start filling in tukey before actual tdata is reached
         # place tukey filter values in the corresponding time bins
         window_iter = 0
-        for sample in range(self.datasize):
-            if self.tdata[sample] < window_t0:
+        for sample in range(filt_t.size):
+            if filt_t[sample] < window_t0:
                 continue
             if window_iter < window_size:
                 filtering[sample] = tukey[window_iter]
@@ -297,57 +354,119 @@ class waveform:
             else:
                 break
         
+        # truncate filter to match data size
+        filtering = filtering[filt_t >= t[0]-dt][:self.datasize]
+        
         # filter the vdata
-        self.vdata *= filtering
+        filt_vdata = self.vdata*filtering
+        self.data[self.vcol] = filt_vdata
         
         # return the filtering in the time domain in case it's needed (i.e. plotting)
         self.filter = filtering
         
-    
-    def calc_fft(self, rfft: bool = False, ignore_DC: bool = True) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
+        self._keep_odd()
+        
+    def zeropad(self, length=6, where='both'):
         '''
-        Calculate the waveform's discrete Fourier transformation.
+        Zeropad the vdata (extends the tdata).
 
         Parameters
         ----------
-        rfft : bool, optional
-            If True, the FFT is calculated using numpy.rfft(). Otherwise, numpy.fft() is used.
-            The default is False.
-        ignore_DC : bool, optional
-            If True, the 0 Hz component is dropped from the data. The default is True.
+        length : int, optional
+            The number of zeros to append. The default is 6.
+        where : 'before', 'after', 'both', optional
+            If 'before', the zeros are appended at the beginning. If 'after', append at the end.
+            If 'both' append to both sides (total padding is length*2). The default is 'both'.
 
         Returns
         -------
-        fHz : numpy.ndarray
-            The FFT frequency array in Hz.
-        fftdata : numpy.ndarray
-            The FFT voltage values.
-        fftdB : numpy.ndarray
-            The FFT in power dB, assuming 50 Ohm impedance.
-            dB = 10 * np.log10( np.abs(fftdata)**2 / 50)
-            
+        None
+
         '''
         
-        # frequency slice if we're ignoring 0 Hz or not
-        freq_slice = slice(1,None) if ignore_DC else slice(None,None)
+        v = self.vdata 
+        t = self.tdata
+        dt = 1. / self.samplerate
         
-        # get the voltage data and zero mean it
-        vdata = self.vdata.copy()
-        vdata += -1 * np.mean(vdata)  # zeromean
+        # determine where to pad
+        if where == 'before':
+            before = length
+            after = 0
+        elif where == 'after':
+            before = 0
+            after = length 
+        elif where == 'both':
+            before = length
+            after = length
+        else:
+            raise ValueError("Error: Argument 'where' must be one of 'before', 'after' or 'both'")
+            
+        # pad
+        padded_vdata = np.pad(v, (before,after))
+        padded_tdata = np.arange(t[0] - length*dt, t[-1] + (length+1)*dt, dt)
         
-        # use the corresponding fft function and slice according to freq slice
-        fftdata = rFFT(vdata)[freq_slice] if rfft else FFT(vdata)[freq_slice]
+        # make filter same length
+        if self.filter is not None:
+            self.filter = np.pad(self.filter, (before,after))
         
-        # convert dB
-        fftdB = 10 * np.log10( np.abs(fftdata)**2 / 50)
+        # set padded data
+        self.data = pd.DataFrame({self.tcol : padded_tdata, self.vcol : padded_vdata}, 
+                                 dtype=np.float64)
         
-        # get the corresponding frequency array using the corresponding fft function
-        fHz = rFFTfreq(self.datasize, self.samplerate)[freq_slice] if rfft else FFTfreq(self.datasize, self.samplerate)[freq_slice] #ignore DC bin
+        self._keep_odd()
         
-        return (fHz, fftdata, fftdB)
+    # We can use this instead of having to find the window manually every time.
+    # The default window length and offset we chose based on the worst case
+    # scenarios (largest angles waveforms) without jeopardizing 'cleaner' waveforms.
+    def estimate_window(self, dt_ns: int = 80, t_ns_offset: float = 30) -> tuple:
+        '''
+        Give a best estimate for a time domain window containing the pulse of the waveform.
+
+        Parameters
+        ----------
+        dt_ns : int
+            The window time length in nanoseconds. The default is 70.
+        t_ns_offset : float
+            The window time offset (to the left) in nanoseonds from the time of the voltage peak.
+            Default is 20.
+
+        Returns
+        -------
+        (tmin,tmax) : tuple(2)
+            The time min and max of the window.
+        '''
         
-    def plot(self, ax=None, tscale=1, vscale=1, 
-             tlabel=None, vlabel=None, title="", **kwargs) -> None:
+        # get the index of the voltage peak
+        v = self._RAWDATA[self.vcol].values
+        t = self._RAWDATA[self.tcol].values
+        peak_ind = (v**2).argmax()
+        
+        # determine the window min and max
+        tmin = t[peak_ind] - t_ns_offset*1e-9
+        tmax = tmin + dt_ns*1e-9
+        
+        return (tmin,tmax)
+    
+    def clean(self) -> None:
+        '''
+        Clean the data using the best settings of each available method.
+        Zeromean, truncate, filter, and zeropad the waveform.
+
+        Returns
+        -------
+        None
+
+        '''
+        self.reset()
+        self.zeromean()
+        self.truncate(self.estimate_window())
+        self.tukey_filter('peak')
+        # self.resample()
+        self.zeropad()
+        self._keep_odd()
+        
+    def plot(self, ax=None, tscale=1, vscale=1, tlabel=None, vlabel=None, 
+             show_filter=False, title="", **kwargs) -> None:
         '''
         Plots the voltage waveform.
 
@@ -367,6 +486,9 @@ class waveform:
         vlabel : str, optional
             The voltage axis (y axis) label. Specify the label to include the correct units
             if vscale is not one of {1,1e3,1e6}.
+        show_filter : bool, optional
+            If True and a filter has been applied, the filter will be plotted with the
+            waveform, normalized to the peak of the waveform.
         title : str, optional
             The plot title. The default is "".
         **kwargs
@@ -405,6 +527,51 @@ class waveform:
         
         # plot
         ax.plot(self.tdata*tscale, self.vdata*vscale, lw=lw, **kwargs)
+        
+        # show filter
+        if show_filter and (self.filter is not None):
+            ax.plot(self.tdata*tscale, self.filter*self.vdata.max()*vscale, lw=lw, ls='--')
+    
+    def calc_fft(self, rfft: bool = False, ignore_DC: bool = True) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
+        '''
+        Calculate the waveform's discrete Fourier transformation.
+
+        Parameters
+        ----------
+        rfft : bool, optional
+            If True, the FFT is calculated using numpy.rfft(). Otherwise, numpy.fft() is used.
+            The default is False.
+        ignore_DC : bool, optional
+            If True, the 0 Hz component is dropped from the data. The default is True.
+
+        Returns
+        -------
+        fHz : numpy.ndarray
+            The FFT frequency array in Hz.
+        fftdata : numpy.ndarray
+            The FFT voltage values.
+        fftdB : numpy.ndarray
+            The FFT in power dB, assuming 50 Ohm impedance.
+            dB = 10 * np.log10( np.abs(fftdata)**2 / 50)
+            
+        '''
+        
+        # frequency slice if we're ignoring 0 Hz or not
+        freq_slice = slice(1,None) if ignore_DC else slice(None,None)
+        
+        # get the voltage data
+        vdata = self.vdata.copy()
+        
+        # use the corresponding fft function and slice according to freq slice
+        fftdata = rFFT(vdata)[freq_slice] if rfft else FFT(vdata)[freq_slice]
+        
+        # convert dB
+        fftdB = 10 * np.log10( np.abs(fftdata)**2 / 50)
+        
+        # get the corresponding frequency array using the corresponding fft function
+        fHz = rFFTfreq(self.datasize, 1. / self.samplerate)[freq_slice] if rfft else FFTfreq(self.datasize, self.samplerate)[freq_slice] #ignore DC bin
+        
+        return (fHz, fftdata, fftdB)
         
     def plot_fft(self, ax=None, fscale=1, flabel=None, flim=None, dBlim=None,
                  title="", legend=False, show_PUEO_band=True, **kwargs) -> None:
@@ -481,35 +648,18 @@ class waveform:
             
     # Private Methods
     # ---------------
+        
+    def _keep_odd(self):
+        '''
+        Check the data length, and if even, remove the last point to maintain
+        an odd data length.
+        '''
+        if (self.vdata.size % 2 == 0) or (self.tdata.size % 2 == 0): # even
+            self.data.drop(self.data.tail(1).index, inplace=True)
             
-    # zero pad the waveform (to be used when truncating)
-    def _zeropad(self, size=4):
-        '''
-        Zero pad the voltage data at the end.
-        
-        Parameters
-        ----------
-        size : int, optional
-            The size of the padding.
-        
-        Returns
-        -------
-        None
-        '''
-        
-        # get time info
-        dt = self.samplerate
-        tf = self.tdata[-1]
-        
-        # create padded data, time continuation, 0 for voltage
-        t_padded = [tf + dt*i for i in range(size)]
-        v_padded = np.zeros(size)
-        
-        # the padded dataframe
-        padding = pd.DataFrame({self.tcol: t_padded, self.vcol: v_padded})
-        
-        # set this object's data to the padded dataframe
-        self.data = pd.concat((self.data,padding), ignore_index=True)
+            # same for filter if there is one
+            if self.filter is not None:
+                self.filter = self.filter[:-1]
         
     # for filtering using a tukey window
     def _tukey_window(self, size, r=0.5):
@@ -578,18 +728,3 @@ class waveform:
             warn("Parseval's Theorem {} with time domain power calculated".format(result) +
                  " to be {} and frequency domain power calculated to be {}".format(tpower, fpower))
        
-        
-# EXAMPLE
-# foo = waveform("Data/20220818/R2A_TO_R3A_VPOL_NEG10_01_Ch1.csv")
-# print(foo.path)
-# print(foo.vcol)
-# print(foo.tcol)
-# print(foo.data)
-# print(foo.name)
-# print(foo.vdata)
-# print(foo.tdata)
-# print(foo.datasize)
-# print(foo.samplerate)
-# foo.truncate(foo.estimate_window())
-# foo.plot(tscale=1e9, vscale=1e3)
-# foo.plot_fft(fscale=1e-9, flim=(0.1,2), dBlim=(-80,-10))
