@@ -530,7 +530,7 @@ class waveform:
         
         # show filter
         if show_filter and (self.filter is not None):
-            ax.plot(self.tdata*tscale, self.filter*self.vdata.max()*vscale, lw=lw, ls='--')
+            ax.plot(self.tdata*tscale, self.filter*self.vdata.max()*vscale, lw=lw, ls='--', alpha=0.5)
     
     def calc_fft(self, rfft: bool = False, ignore_DC: bool = True) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
         '''
@@ -574,7 +574,7 @@ class waveform:
         return (fHz, fftdata, fftdB)
         
     def plot_fft(self, ax=None, fscale=1, flabel=None, flim=None, dBlim=None,
-                 title="", legend=False, show_PUEO_band=True, **kwargs) -> None:
+                 title="", legend=False, GHz_band=None, **kwargs) -> None:
         '''
         Plots the waveform FFT in dB.
 
@@ -597,9 +597,8 @@ class waveform:
             The plot title. The default is "".
         legend : bool, optional
             If True, then legend will be shown.
-        show_PEUO_band : bool, optional
-            If True, the frequencies outside of the PUEO band, (0.3, 1.2) GHz,
-            will be greyed out.
+        GHz_band : tuple(2), None, optional
+            If True, grey out areas outside the given band.
         **kwargs
             matplotlib.Axes.plot() kwargs.
 
@@ -634,13 +633,14 @@ class waveform:
         ax.plot(fHz*fscale, fftdB, lw=lw, **kwargs)
         
         # show the PUEO band
-        if show_PUEO_band:
+        if GHz_band is not None:
+            bandmin, bandmax = GHz_band
             dBmin, dBmax = ax.get_ylim()
             fmin, fmax = ax.get_xlim()
-            ax.axvline(x=0.3, c='gray', ls='--', lw=4, label="PUEO Band")
-            ax.axvline(x=1.2, c='gray', ls='--', lw=4)
-            ax.axvspan(0, 0.3, facecolor='grey', alpha=0.2)
-            ax.axvspan(1.2, fmax, facecolor='grey', alpha=0.2)
+            ax.axvline(x=bandmin*1e9*fscale, c='gray', ls='--', lw=4, label="Band")
+            ax.axvline(x=bandmax*1e9*fscale, c='gray', ls='--', lw=4)
+            ax.axvspan(0, bandmin*1e9*fscale, facecolor='grey', alpha=0.2)
+            ax.axvspan(bandmax*1e9*fscale, fmax, facecolor='grey', alpha=0.2)
         
         if legend:
             ax.legend(loc='upper right')

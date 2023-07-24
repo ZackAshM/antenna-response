@@ -49,6 +49,7 @@ from warnings import warn
 # the class to handle the gain tasks
 class antenna_response:
     '''
+    DOCUMENTATION CURRENTLY OUT OF DATE
     This class handles many gain-related calculations for a single horn to horn setup
     at multiple angles. It requires both pulse and signal data.
     
@@ -111,16 +112,14 @@ class antenna_response:
         
     '''
     
-    def __init__(self, pulse_path, signal_paths, distance):
+    def __init__(self, pulse_path, signal_paths, distance, bandGHz=(0.3,1.2)):
         
         self.pulse_path = pulse_path
         self.signal_paths = signal_paths
-        self.angle_lim = (-180,180)
-        self.pulse = None
-        self.signals = None
-        self.set_data(data='pulse')# --> self.pulse
-        self.set_data(data='signal', set_angles=self.angle_lim)# --> self.angles, self.signals
+        self._initialize_data()# --> self.pulse, self.angles, self.signals
         self.labels = [self.pulse.label] + [sig.label for sig in self.signals]
+        self.bandGHz = bandGHz
+        
         _distance = np.array(distance, ndmin=1, dtype=float)
         if len(_distance) > 1:
             self.front_dist_m = _distance[0]
@@ -128,18 +127,16 @@ class antenna_response:
         else:
             self.front_dist_m = _distance[0]
             self.back_dist_m = _distance[0]
-        self.bandGHz = (0.3,1.2)
         
         # -properties-
-        # self.window
         # self.gains
         # self.impulse_response
-    
-    @property
-    def window(self):# -> tuple(2)
-        # window based on boresight signal
-        boresight = self.signals[self.angles==0][0]
-        return boresight.estimate_window()
+        
+        # -private attributes-
+        # self._ANGLES
+        # self._PULSE
+        # self._SIGNALS
+        
     
     @property
     def gains(self):# -> np.ndarray[interp1d]:
@@ -182,7 +179,7 @@ class antenna_response:
             # check that the freq range covers full band
             self._check_pueoband(sig_fHz, sig_waveform.label, 'antenna_response.gains()')
             
-        # gain calculation time
+        # gain calculation
         
         # set our domain, postive freqs in Hz
         fHz = np.linspace(self.bandGHz[0]*1e9, self.bandGHz[1]*1e9, pul_fHz.size, endpoint=True)
@@ -377,6 +374,18 @@ class antenna_response:
         
         return imp_resp
     
+    
+    def reset(self):
+        '''
+        Set the angles, pulse, and signals back to the initialized versions.
+        '''
+        del self.angles
+        del self.pulse
+        del self.signals
+        self.angles = self._ANGLES.copy()
+        self.pulse = self._PULSE.copy()[0]
+        self.signals = self._SIGNALS.copy()
+    
     def plot_impulse_response(self, ax=None, **kwargs):
         
         # bs = self.signals[self.angles==0][0]
@@ -389,7 +398,7 @@ class antenna_response:
         if ax is None:
             ax = plt.subplots(figsize=(30,15))[1]
         
-        dt = self.signals[0].samplerate
+        dt = 1. / self.signals[0].samplerate
         
         imp_resp_t = [dt*i*1e9-20 for i in range(len(imp_resp))]#np.linspace(0, 70, len(imp_resp))
         ax.plot(imp_resp_t, imp_resp, lw=6, **kwargs)#bs.tdata[:-1], imp_resp, lw=6)
@@ -398,26 +407,36 @@ class antenna_response:
         # bs.plot(ax=ax)
         # self.pulse.plot(ax=ax)
     
-    def set_data(self, data, truncate='best', tukey_window='best', set_angles=None) -> None:
+    def clean_data(self, whichdata, truncate='best', tukey_filter='best', 
+                   resample=None, zeropad=4, set_angles=None) -> None:
         """
-        Set and clean the data waveforms. Truncate and/or filter (Tukey).
+        Clean the data waveforms. Choose which data to clean (signals or pulse). 
+        Choose to truncate, filter (via Tukey), resample, zeropad, or limit the angles.
+        Note that these effects are applied to the current version of the data, instead
+        of the initialized version of the data.
 
         Parameters
         ----------
-        data : {'pulse', 'signal'}
-            The type of the data.
-        truncate : tuple(2), 'best', None, optional
+        truncate : tuple(2), 'best', None
             The window in seconds which to truncate the data. If 'best' then each waveform will
             be truncated by the boresight_window if data is 'signal', or waveform.estimate_window()
             if data is 'pulse'. If None, the data will not be truncated. The default is 'best'.
-        tukey_window : tuple(2), 'best', 'full', None, optional
+        tukey_window : tuple(2), 'best', 'full', None
             The window in seconds which to apply a Tukey filter to the data. If 'best' then each
             waveform will be filtered with the window given by the tukey_window attribute
             if data is 'signal', or waveform.estimate_window(dt_ns=15, t_ns_offset=4) if data
             is 'pulse'. If 'full', the filter will apply to the whole data range. If None, 
             the data will not be filtered. The default is 'best'.
-        set_angles : tuple(2), optional
+        set_angles : tuple(2), None
             Set the angle limit of the data by (angle_min, angle_max).
+        resample : int, None
+            Resamples all data to samplerate given by int in units of GS/s. Happens
+            after truncating but before zeropadding.
+            NOT YET IMPLEMENTED
+        zeropad : int
+            Zeropad the beginning and end of the data after truncating and resampling. The number
+            of zeros on each end is the given int. Default is 0.
+            NOT YET IMPLEMENTED
 
         Returns
         -------
@@ -425,105 +444,41 @@ class antenna_response:
 
         """
         
-        # settle data type
-        pulse = data == 'pulse'
-        signal = data == 'signal'
-        if not pulse and not signal:
-            raise ValueError("Error [antenna_response.set_data]: Parameter 'data' " +
-                             "must be one of 'pulse' or 'signal'.")
+        # set data
+        # is_pulse = (whichdata=='pulse')
+        # if is_pulse:
+        #     data_wfs = np.array([self.pulse])
+        # else:
+        #     data_wfs = self.signals
+        #     bs = self.signals[self.angles==0][0]
         
-        # set waveforms
-        if pulse:
-            del self.pulse
-            data_waveforms = np.array([antennaData(path) for path in self.pulse_path])
-            self.pulse = data_waveforms[0]
-        elif signal:
-            del self.signals
-            data_waveforms = np.array([antennaData(path) for path in self.signal_paths])
-            self.signals = data_waveforms
+        
+        # TEMPORARY: directly use best clean settings for each individual waveform
+        data_wfs = np.append([self.pulse], self.signals)
+        for wf in data_wfs:
+            wf.clean()
+        
+            # # truncate
+            # if truncate == 'best':
+            #     if is_pulse:
+            #         wf.truncate(wf.estimate_window())
+            #     else:
+            #         bs_window = bs.estimate_window()
+            #         wf.truncate(bs_window)
+                        
+            # elif truncate is None: # do nothing
+            #     pass
             
-            # set angle limits if given
-            if set_angles is None:
-                pass
-            else:
-                # redefine instance's angle lim if given a new one
-                self.angle_lim = set_angles
-
-            # parse the bounds
-            angle_min, angle_max = self.angle_lim
+            # else:
+            #     wf.truncate(truncate)
                 
-            # get everything within the angle limits
-            within_lim = lambda theta: np.logical_and(angle_min<=theta,theta<=angle_max)
-            angles = [sig.angle for sig in data_waveforms if within_lim(sig.angle)]
-            signals = [sig for sig in data_waveforms if within_lim(sig.angle)]
-            
-            # check if there is a boresight signal
-            boresight_exists = 0 in angles
-            if not boresight_exists:
-                raise RuntimeError("Error [antenna_response.set_data]: A boresight (angle 0) " +
-                                   "signal data was not found, but is necessary.")
-            
-            # index sorter will be used for signals too
-            angle_sorter = np.argsort(angles)
-            
-            # sort based on angle sorter
-            self.angles = np.array(angles)[angle_sorter]
-        
-            data_waveforms = np.array(signals)[angle_sorter]
-                
-        
-        # truncate
-        if truncate == 'best':
-            for raw_data in data_waveforms:
-                if pulse:
-                    raw_data.truncate(raw_data.estimate_window())
-                elif signal:
-                    raw_data.truncate(self.window)
+            # # tukey filter
+            # if tukey_window == 'best':
+            #     wf.tukey_filter('peak')
                     
-        elif truncate is None: # do nothing
-            pass
-        
-        else:
-            for raw_data in data_waveforms:
-                raw_data.truncate(truncate)
-                
-        sample_waveform = data_waveforms[0]
-        if pulse and (self.signals is not None):
-            test_waveform = self.signals[0]
-            self._check_datarecord(sample_waveform, test_waveform.datasize, test_waveform.samplerate, 
-                                   location="antenna_response.set_data()", add='(Pulse vs Signals) Check pulse truncate window.')
-        elif signal and (self.pulse is not None):
-            test_waveform = self.pulse
-            self._check_datarecord(sample_waveform, test_waveform.datasize, test_waveform.samplerate, 
-                                   location="antenna_response.set_data()", add='(Signals vs Pulse) Check signal truncate window.')
-        
-        # tukey filtering
-        if tukey_window == 'best':
-            for raw_data in data_waveforms:
-                if pulse:
-                    raw_data.tukey_filter(time_window=raw_data.estimate_window(dt_ns=25, t_ns_offset=7))
-                elif signal:
-                    t_window = self.signals[self.angles==0][0].estimate_window(dt_ns=15, t_ns_offset=4)
-                    raw_data.tukey_filter(time_window=t_window)
-                    
-        elif tukey_window == 'full':
-            if pulse:
-                raw_data.tukey_filter()
-            elif signal:
-                raw_data.tukey_filter()
-                
-        elif tukey_window is None: # do nothing
-            pass
-        
-        else:
-            for raw_data in data_waveforms:
-                raw_data.tukey_filter(time_window=tukey_window)
-
-        # set the data to the array containing the (cleaned) waveforms
-        if pulse:
-            self.pulse = data_waveforms[0]
-        elif signal:
-            self.signals = data_waveforms
+            # # resample
+            
+            # # zeropad
 
             
     def plot_gain(self, angle=0, fGHz=None, ax=None, **kwargs) -> None:
@@ -717,7 +672,36 @@ class antenna_response:
             
             np.savetxt(filename, output, fmt=['%.2e','%.2f'])
             
-    
+            
+    def _initialize_data(self):
+        """
+        Set the data waveforms based on the provided filenames in the class.
+        Initializes self.angles, self.pulse, and self.signals. Angles and signals
+        are commonly sorted in order of increasing angles.
+        """
+        
+        # set waveforms
+        self._PULSE = np.array([antennaData(path=path) for path in self.pulse_path])
+        self.pulse = self._PULSE.copy()[0]
+        signal_wfs = np.array([antennaData(path=path) for path in self.signal_paths])
+            
+        # set angles and sort
+        angles = [sig.angle for sig in signal_wfs]
+        signals = [sig for sig in signal_wfs]
+        
+        angle_sorter = np.argsort(angles)
+        self._ANGLES = np.array(angles)[angle_sorter]
+        self.angles = self._ANGLES.copy()
+        self._SIGNALS = np.array(signals)[angle_sorter]
+        self.signals = self._SIGNALS.copy()
+
+        # check data
+        test_wf = self.signals[self.angles==0][0]
+        for sample_wf in np.append(self.signals, self.pulse):
+            self._check_datarecord(sample_wf, test_wf.datasize, test_wf.samplerate, 
+                                       location="antenna_response.set_data()", 
+                                       add='Tested against boresight data {}.'.format(test_wf.label))
+            
     def _force_band(self, fGHz=None, location="antenna_response"):
         """
         Truncate the given frequency array to self.bandGHz. This method also

@@ -116,7 +116,8 @@ def tukey_window(size, r=0.5):
 # Since there's so much just to make the plot look nice, I separated it into this function
 # If you haven't seen plotly before, prepare yourself for many dictionaries (though imo it's
 # easier to customize plot settings this way)
-def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', kwargs_for_trace={}, **kwargs):
+def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', sector=(0,180), alltitle='', 
+                                kwargs_for_trace={}, **kwargs):
     '''
     Makes plotly's polar plot look nice for -90 to 90 deg antenna data.
 
@@ -128,6 +129,8 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
         Radial axis (min,max) limits.
     rlabel : str
         The radial axis label. The default is ''.
+    sector : tuple(2)
+        Set the angular sector of the chart. Default is (0,180), i.e. upper half.
     alltitle : str
         The overall title. The default is ''.
     kwargs_for_trace : dict
@@ -146,7 +149,7 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
     # kwarg defaults
     polar = kwargs.pop('polar', 
                        dict(                                # polar setting
-                           sector = [0,360],                # set chart shape (half)
+                           sector = sector,                # set chart shape (half)
                            angularaxis = dict(              # angle axis settings
                                dtick = 10,                  # angle tick increment
                                rotation = 90,               # rotates data to be on upper half
@@ -179,7 +182,7 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
                              xanchor="right",               # reference for x pos
                              x=1.05,                        # legend x pos percentage
                              yanchor="top",                 # reference for x pos
-                             y=0.98,                        # legend y pos percentage
+                             y=1.05,                        # legend y pos percentage
                              font=dict(size=20),            # font size
                              itemsizing='constant',         # symbol size to not depend on data traces
                              itemwidth=30,                  # symbol size
@@ -190,7 +193,7 @@ def make_plotly_polar_look_nice(fig, rlim=(None,None), rlabel='', alltitle='', k
                         dict(                               
                             b=30,
                             t=70,
-                            l=20,
+                            l=40,
                             r=60,
                             ),
                         )
