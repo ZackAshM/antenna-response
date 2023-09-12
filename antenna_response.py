@@ -19,7 +19,6 @@ os.chdir(HERE)
 
 # functional imports
 from antennaData import antennaData
-import some_functions as sf
 import antennas
 
 import numpy as np
@@ -40,6 +39,8 @@ sns.set_theme(font_scale=5, rc={'font.family':'Helvetica', 'axes.facecolor':'#e5
                                 'axes.xmargin':0, 'axes.ymargin':0.05})
 import plotly.graph_objects as go
 import plotly.io as pio
+import plotly.express as px
+from itertools import cycle
 pio.renderers.default='png'     # for displaying on noninteractive programs
 
 # helpful, but not necessary imports
@@ -55,49 +56,43 @@ class antenna_response:
     
     Parameters
     ----------
-    pulse_path : iterable[str or pathlib.Path]
-        The full path of the pulser data. If the iterable size is greater than 1,
-        only the first file is chosen as the pulse data.
+    pulse_path : str or pathlib.Path
+        The full path of the pulse waveform data.
     signal_paths : iterable[str or pathlib.Path]
-        The full paths of the signal data.
+        The full paths of the signal waveform data.
     distance : float or iterable(2)
-        The distance in meters between Rx and Tx. If an iterable of size 2 is given, the
-        distance will be linearly interpolated from the first number to the second.
-        This is usually to assign a distance between the front faces and the back panels.
+        The distance in meters between Receiver and Transmitter. If an iterable of 
+        size 2 is given, the effective distance is a linear interpolation from the first 
+        number to the second (This is usually to assign distances between the front faces 
+        and the back panels as an effective frequency dependency).
+    bandGHz : optional, tuple(2)
+        The (min, max) frequency limits in GHz. Default is the PUEO band (0.3, 1.2).
     
     Attributes
     ----------
-    pulse_path : iterable[str or pathlib.Path]
-        The full path of the pulser data. If the iterable size is greater than 1,
-        only the first file is chosen as the pulse data.
+    pulse_path : str or pathlib.Path
+        The full path of the pulser waveform data.
     signal_paths : iterable[str or pathlib.Path]
-        The full paths of the signal data.
+        The full paths of the signal waveform data.
     pulse : antennaData
-        The pulser waveform.
-    angle_lim : tuple(2)
-        The (min,max) angle limit in degrees for inclusion. The rest are ignored.
+        The pulser waveform data.
     angles : ndarray[int]
-        The array of sorted angles.
+        The array of angles in ascending order.
     signals : ndarray[antennaData]
-        The array containing signal waveforms, with sorting matched with angles.
+        The array containing signal waveforms, with sorting matched with self.angles.
     labels : list[str]
         The labels of every file, obtained by waveform.label.
+    bandGHz : tuple(2)
+        The (min,max) frequency limits in GHz.
     front_dist_m : float
         The distance in meters between the front faces of the antennas.
     back_dist_m : float
         The distance in meters between the backsides of the antennas.
-    bandGHz : tuple(2)
-        The (min,max) frequency limits in GHz for which all calculations are truncated by.
-        This is by default set to the PUEO band (0.3,1.2) GHz in order to prevent
-        outside interpolations in scipy.interpolate.interp1d.
-    window : tuple(2)
-        The best truncation window for boresight data. This is recommended to be
-        applied to all of the signal waveforms.
     gains : ndarray[scipy.interpolate.interp1d]
         An array of gain interpolations as a function of frequency in Hz. These are
-        sorted by angle, just like the signals.
+        sorting matched with self.angles.
     impulse_response : scipy.interpolate.interp1d
-        The calculated impulse response of the boresight signal. THIS IS NOT YET COMPLETED.
+        The calculated impulse response of the boresight signal.
     
     Methods
     -------
@@ -140,6 +135,22 @@ class antenna_response:
     
     @property
     def gains(self):# -> np.ndarray[interp1d]:
+        '''
+        Calculates the gain using the pulse and signals data. Each element of the returned
+        array is a scipy.interpolate.interp1d of the gain values as a function of
+        frequency in Hz. The returned array is sorting matched with self.angles (and self.signals).
+        
+        The gain is calculated by the following steps:
+            1. Use waveform.calc_fft to get the relative gain of the pulse and signals waveform data:
+            dB = 10 * log10( abs(rfft)**2 / 50)
+            2. Create scipy.interpolate.interp1d of each relative gain with the corresponding
+            frequency data given by waveform.calc_fft.
+            3. Calculate the gain via https://www.antenna-theory.com/basics/friis.php :
+            gain = sig_dB - pul_dB + friis_term - transmitted_dB
+            where friis_term is the physical propagation term given by
+            friis_term = 20 * log10( abs( (4 * pi * dist * fHz) / c ) )
+
+        '''
         
         # get pulse FFT, restrict it to PUEO band (with 5% margin)
         pul_fHz, pul_rfft, pul_dB = self.pulse.calc_fft(rfft=True, ignore_DC=True)
@@ -202,39 +213,42 @@ class antenna_response:
         if same_antenna:
             Tx = Tx+port
         
-        # gain calc depending on set up
-        # if same_antenna:
-        #     warn("NOTICE [antenna_response.gains()]: Calculation for {} to {} is assuming the same gain.".format(Rx, Tx))
-        #     _gains = [(sig_gain(fHz) - pul_gain(fHz) + friis_term) / 2 for sig_gain in sig_gains]
-        # else:
-        # if same_antenna: tx_gain = antennas.gain[Tx+port](fHz) else antennas.gain[Tx](fHz)
+        # gain calculation
         _gains = [sig_gain(fHz) - pul_gain(fHz) + friis_term - antennas.gain[Tx](fHz) for sig_gain in sig_gains]
-        # note: same antenna gain calc only works for boresight, so just use this above to cover all cases    
         
         # return list of gain interpolations sorted by file
         return np.asarray([interp1d(fHz, gain, assume_sorted=True, bounds_error=True) for gain in _gains])
     
     @property
-    def impulse_response(self) -> interp1d:
+    def impulse_response(self):
+        '''
+        Return the (time [ns], response [m/ns]) impulse response of the boresight signal.
+
+        Returns
+        -------
+        None.
+
+        '''
         
-        warn("WARNING [antenna_response.impulse_response()]: THIS METHOD IS NOT YET COMPLETE.")
+        warn("WARNING [antenna_response.impulse_response()]: THIS METHOD IS NOT YET FULLY DEBUGGED.")
         
-        # get pulser and signal, fHz should be the same for both (if same samplerate)
+        # boresight
         bs = self.signals[self.angles==0][0]
         
-        # print('bs size: ', bs.vdata.size)
-        # print('pulse size: ', self.pulse.vdata.size)
-        
+        # get pulser and signal FFTs, fHz should be the same for both
+        self._check_datarecord(self.pulse, bs.datasize, bs.samplerate, location='antenna_response.impulse_response', 
+                               add='Impulse Response results may misbehave due to uncommon frequency values in FFT')
         fHz, pfft, _ = self.pulse.calc_fft()
         _ , sfft, _ = bs.calc_fft()
         
+        # ignore very high frequencies
         fCut = np.logical_and(-2e9 < fHz, fHz < 2e9)
         fHz = fHz[fCut]
         pfft = pfft[fCut]
         sfft = sfft[fCut]
         
-        print('bs fft: ', sfft.size)
-        print('pfft: ', pfft.size)
+        # print('bs fft: ', sfft.size)
+        # print('pfft: ', pfft.size)
         
         # noise = self.pulse#boresight[0]
         # noise.truncate(noise.estimate_window(t_ns_offset = 170))
@@ -249,7 +263,7 @@ class antenna_response:
         
         # get distance linear interpolation
         fftsize = fHz.size
-        print('freq: ', fftsize)
+        # print('freq: ', fftsize)
         pos_size = int(fftsize/2) if fftsize % 2 == 0 else int(fftsize/2) + 1  # size for positive freq side
         pos_dist = np.linspace(self.front_dist_m, self.back_dist_m, pos_size)
         neg_dist = np.linspace(self.back_dist_m, self.front_dist_m, int(fftsize/2))
@@ -261,8 +275,9 @@ class antenna_response:
         
         # calculate impulse response (TO DO)
         
-        # Simply division: IR = sqrt((r*c*V_r(f)) / (i*f*V_src(f)))
-        IRfft2 = phys * ( sfft / pfft )  # the fft of imp resp squared (radicand)
+        # Simple division: IR = sqrt((r*c*V_r(f)) / (i*f*V_src(f)))
+        # this method is noisy in high frequencies
+        # IRfft2 = phys * ( sfft / pfft )  # the fft of imp resp squared (radicand)
         
         # -- wiener deconvolution --
         
@@ -289,7 +304,7 @@ class antenna_response:
         # snr = np.hstack((below1, below2, within, above1, above2))
         snr = np.hstack((snr_pos,np.flip(snr_pos)))
         
-        print('snr: ', snr.size)
+        # print('snr: ', snr.size)
         
         # snr = np.array([1 if np.abs(f)<0.3e9 else 1000 if np.abs(f)<=1.2e9 else 1 for f in fHz])    # constant inband snr vs constant outofband snr
         # snr = sfft / nfft
@@ -309,53 +324,53 @@ class antenna_response:
         # other methods...
         
         # unwrap phase to take the sqrt
-        IRfft2mag = np.abs(IRfft2)
-        IRfft2phi = np.angle(IRfft2)
-        IRfft2phiunwrapped = np.unwrap(IRfft2phi)
+        # IRfft2mag = np.abs(IRfft2)
+        # IRfft2phi = np.angle(IRfft2)
+        # IRfft2phiunwrapped = np.unwrap(IRfft2phi)
         
         IRfft2magw = np.abs(IRfft2w)
         IRfft2phiw = np.angle(IRfft2w)
         IRfft2phiunwrappedw = np.unwrap(IRfft2phiw)
         
         # take the sqrt (half of the phase)
-        phases = 0.5 * IRfft2phiunwrapped
-        phases = (phases + np.pi) % (2 * np.pi) - np.pi  # wrap again (do we need to do this?)
-        IRfft = np.sqrt(IRfft2mag) * np.exp(1j * phases)
+        # phases = 0.5 * IRfft2phiunwrapped
+        # phases = (phases + np.pi) % (2 * np.pi) - np.pi  # wrap again (do we need to do this?)
+        # IRfft = np.sqrt(IRfft2mag) * np.exp(1j * phases)
         
         phasesw = 0.5 * IRfft2phiunwrappedw
         phasesw = (phasesw + np.pi) % (2 * np.pi) - np.pi  # wrap again (do we need to do this?)
         IRfftw = np.sqrt(IRfft2magw) * np.exp(1j * phasesw)
         
-        # ------
+        # - POWER INTEGRATION -----
         
-        ax = plt.subplots(figsize=(30,15))[1]
-        ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfft)**2/50)), ls="--", lw=6, c='black',label="Simple Division")
-        ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfftw)**2/50)), lw=6, c='black', label="Wiener Deconvolution")
-        # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfft)**2/50), ls="--", lw=6, c='black',label="Simple Division")
-        # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfftw)**2/50), lw=6, c='black', label="Wiener Deconvolution")
-        ax.set(xlim=(0,None), xlabel="f [GHz]", ylabel=r"$10\log{$|fft|$^2/50}$ [dB]")
-        ax.set_title(bs.Rx + " Impulse Response FFT")
+        # ax = plt.subplots(figsize=(30,15))[1]
+        # ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfft)**2/50)), ls="--", lw=6, c='black',label="Simple Division")
+        # ax.plot(np.fft.fftshift(fHz*1e-9), np.fft.fftshift(10*np.log10(np.abs(IRfftw)**2/50)), lw=6, c='black', label="Wiener Deconvolution")
+        # # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfft)**2/50), ls="--", lw=6, c='black',label="Simple Division")
+        # # ax.plot(fHz*1e-9, 10*np.log10(np.abs(IRfftw)**2/50), lw=6, c='black', label="Wiener Deconvolution")
+        # ax.set(xlim=(0,None), xlabel="f [GHz]", ylabel=r"$10\log{$|fft|$^2/50}$ [dB]")
+        # ax.set_title(bs.label + " Impulse Response FFT")
         
-        pueoband = np.logical_and(0.3e9 < fHz, fHz < 0.7e9)
-        int_power = 2*np.sum(np.abs(IRfftw[pueoband])**2/50) / IRfftw[pueoband].size #, dx=fHz[1]-fHz[0])#, x=fHz[pueoband])
+        # pueoband = np.logical_and(0.3e9 < fHz, fHz < 0.7e9)
+        # int_power = 2*np.sum(np.abs(IRfftw[pueoband])**2/50) / IRfftw[pueoband].size #, dx=fHz[1]-fHz[0])#, x=fHz[pueoband])
         
-        dBmin, dBmax = ax.get_ylim()
-        fmin, fmax = ax.get_xlim()
-        ax.axvline(x=0.3, c='gray', ls='--', lw=4, label="PUEO Band")
-        ax.axvline(x=1.2, c='gray', ls='--', lw=4)
-        ax.axvspan(0, 0.3, facecolor='grey', alpha=0.2)
-        ax.axvspan(1.2, fmax, facecolor='grey', alpha=0.2)
+        # dBmin, dBmax = ax.get_ylim()
+        # fmin, fmax = ax.get_xlim()
+        # ax.axvline(x=0.3, c='gray', ls='--', lw=4, label="PUEO Band")
+        # ax.axvline(x=1.2, c='gray', ls='--', lw=4)
+        # ax.axvspan(0, 0.3, facecolor='grey', alpha=0.2)
+        # ax.axvspan(1.2, fmax, facecolor='grey', alpha=0.2)
         
-        ax.add_artist(AnchoredText("Integrated Power In Band: {:0.3} W".format(int_power), loc="lower right", frameon=True))
+        # ax.add_artist(AnchoredText("Integrated Power In Band: {:0.3} W".format(int_power), loc="lower right", frameon=True))
         
-        leg = ax.legend(loc="lower left")
-        for line in leg.get_lines(): 
-            line.set_linewidth(15)
+        # leg = ax.legend(loc="lower left")
+        # for line in leg.get_lines(): 
+        #     line.set_linewidth(15)
         
-        # ------
+        # ---------------------------
         
         # inverse fft
-        IRfftw = np.insert(IRfftw, 0, 0)
+        IRfftw = np.insert(IRfftw, 0, 0)  # add back in 0Hz slot in first position with amplitude 0
         # print(IRfft)
         imp_resp = np.fft.fftshift(np.fft.ifft(IRfftw))
         # imp_resp = np.fft.irfft(IRfftw)
@@ -372,7 +387,11 @@ class antenna_response:
         
         # imp_resp = None
         
-        return imp_resp
+        dt = 1. / self.signals[0].samplerate
+        imp_resp_t = np.array([dt*i*1e9-20 for i in range(len(imp_resp))])
+        
+        
+        return imp_resp_t, imp_resp
     
     
     def reset(self):
@@ -383,60 +402,57 @@ class antenna_response:
         del self.pulse
         del self.signals
         self.angles = self._ANGLES.copy()
-        self.pulse = self._PULSE.copy()[0]
+        self.pulse = self._PULSE.copy()
         self.signals = self._SIGNALS.copy()
     
     def plot_impulse_response(self, ax=None, **kwargs):
         
-        # bs = self.signals[self.angles==0][0]
+        bs = self.signals[self.angles==0][0]
         
         # default plot kwargs
-        title = kwargs.pop("title",self.signals[0].Rx + " Impulse Response")
+        title = kwargs.pop("title",bs.label + " Impulse Response")
         
-        imp_resp = self.impulse_response
+        imp_resp_t, imp_resp = self.impulse_response
         
         if ax is None:
             ax = plt.subplots(figsize=(30,15))[1]
         
-        dt = 1. / self.signals[0].samplerate
+        # dt = 1. / self.signals[0].samplerate
         
-        imp_resp_t = [dt*i*1e9-20 for i in range(len(imp_resp))]#np.linspace(0, 70, len(imp_resp))
+        # imp_resp_t = [dt*i*1e9-20 for i in range(len(imp_resp))]#np.linspace(0, 70, len(imp_resp))
         ax.plot(imp_resp_t, imp_resp, lw=6, **kwargs)#bs.tdata[:-1], imp_resp, lw=6)
-        ax.set(ylabel="Response", xlabel='t [ns]')
+        ax.set(ylabel="Response [m/ns]", xlabel='Time [ns]')
         ax.set_title(title)
         # bs.plot(ax=ax)
         # self.pulse.plot(ax=ax)
     
-    def clean_data(self, whichdata, truncate='best', tukey_filter='best', 
-                   resample=None, zeropad=4, set_angles=None) -> None:
+    def clean_data(self, whichdata,
+                   zeromean_kwargs = {'noise_window_ns':'best'},
+                   truncate_kwargs = {'t_ns_window':'best'},
+                   tukey_filter_kwargs = {'t_ns_window':'peak', 'peak_width_ns':50},
+                   zeropad_kwargs = {'length':6, 'where':'both'}) -> None:
         """
         Clean the data waveforms. Choose which data to clean (signals or pulse). 
-        Choose to truncate, filter (via Tukey), resample, zeropad, or limit the angles.
-        Note that these effects are applied to the current version of the data, instead
-        of the initialized version of the data.
+        Choose to zeromean, truncate, filter (via Tukey), and zeropad.
+        Note that these effects are applied to the initialized version of the data 
+        (further calls of this method will not stack, but instead overwrite).
 
         Parameters
         ----------
-        truncate : tuple(2), 'best', None
-            The window in seconds which to truncate the data. If 'best' then each waveform will
-            be truncated by the boresight_window if data is 'signal', or waveform.estimate_window()
-            if data is 'pulse'. If None, the data will not be truncated. The default is 'best'.
-        tukey_window : tuple(2), 'best', 'full', None
-            The window in seconds which to apply a Tukey filter to the data. If 'best' then each
-            waveform will be filtered with the window given by the tukey_window attribute
-            if data is 'signal', or waveform.estimate_window(dt_ns=15, t_ns_offset=4) if data
-            is 'pulse'. If 'full', the filter will apply to the whole data range. If None, 
-            the data will not be filtered. The default is 'best'.
-        set_angles : tuple(2), None
-            Set the angle limit of the data by (angle_min, angle_max).
-        resample : int, None
-            Resamples all data to samplerate given by int in units of GS/s. Happens
-            after truncating but before zeropadding.
-            NOT YET IMPLEMENTED
-        zeropad : int
-            Zeropad the beginning and end of the data after truncating and resampling. The number
-            of zeros on each end is the given int. Default is 0.
-            NOT YET IMPLEMENTED
+        whichdata : 'signals', 'pulse', 'all'
+            Selects whether to clean the signals or the pulse, or all of them.
+        zeromean_kwargs : False, Dict
+            If False, do not zeromean. Otherwise, provide Dict of waveform.zeromean
+            keyword arguments.
+        truncate_kwargs : False, Dict
+            If False, do not truncate. Otherwise, provide Dict of waveform.truncate
+            keyword arguments.
+        tukey_filter_kwargs : False, Dict
+            If False, do not filter. Otherwise, provide Dict of waveform.tukey_filter
+            keyword arguments.
+        zeropad_kwargs : False, Dict
+            If False, do not zeropad. Otherwise, provide Dict of waveform.zeropad
+            keyword arguments.
 
         Returns
         -------
@@ -445,41 +461,43 @@ class antenna_response:
         """
         
         # set data
-        # is_pulse = (whichdata=='pulse')
-        # if is_pulse:
-        #     data_wfs = np.array([self.pulse])
-        # else:
-        #     data_wfs = self.signals
-        #     bs = self.signals[self.angles==0][0]
+        if whichdata=='pulse':
+            data_wfs = np.array([self.pulse])
+        elif whichdata=='signals':
+            data_wfs = self.signals
+        elif whichdata=='all':
+            data_wfs = np.append(np.array([self.pulse]), self.signals)
+        else:
+            raise ValueError("Error [antenna_response.clean_data()]: Parameter 'whichdata' must be one of 'pulse', 'signals' or 'all'")
         
-        
-        # TEMPORARY: directly use best clean settings for each individual waveform
-        data_wfs = np.append([self.pulse], self.signals)
         for wf in data_wfs:
-            wf.clean()
+            wf.clean(reset = True,
+                     zeromean_kwargs = zeromean_kwargs,
+                     truncate_kwargs = False, 
+                     tukey_filter_kwargs = False,
+                     zeropad_kwargs = {'length':1000})   # ensure data length contains all reasonable windows
+            wf.clean(reset = False,
+                     zeromean_kwargs = zeromean_kwargs,
+                     truncate_kwargs = truncate_kwargs, 
+                     tukey_filter_kwargs = tukey_filter_kwargs,
+                     zeropad_kwargs = zeropad_kwargs)
         
-            # # truncate
-            # if truncate == 'best':
-            #     if is_pulse:
-            #         wf.truncate(wf.estimate_window())
-            #     else:
-            #         bs_window = bs.estimate_window()
-            #         wf.truncate(bs_window)
-                        
-            # elif truncate is None: # do nothing
-            #     pass
-            
-            # else:
-            #     wf.truncate(truncate)
-                
-            # # tukey filter
-            # if tukey_window == 'best':
-            #     wf.tukey_filter('peak')
-                    
-            # # resample
-            
-            # # zeropad
-
+            # check data record
+            if whichdata=='pulse':
+                data_wf = wf
+                test_wf = self.signals[0]
+                self._check_datarecord(data_wf, test_wf.datasize, test_wf.samplerate,
+                                       location='antenna_response_clean_data()', add='Pulse mismatch with signals.')
+            elif whichdata=='signals':
+                data_wf = wf
+                test_wf = self.pulse
+                self._check_datarecord(data_wf, test_wf.datasize, test_wf.samplerate,
+                                       location='antenna_response_clean_data()', add='Signals mismatch with pulse.')
+            elif whichdata=='all':
+                data_wf = wf
+                test_wf = self.pulse
+                self._check_datarecord(data_wf, test_wf.datasize, test_wf.samplerate,
+                                       location='antenna_response_clean_data()', add='Signals mismatch with pulse.')
             
     def plot_gain(self, angle=0, fGHz=None, ax=None, **kwargs) -> None:
         """
@@ -514,14 +532,20 @@ class antenna_response:
         antenna_name = waveform.Rx+waveform.port
         
         # default plotting kwargs
-        color = kwargs.pop("color","black")
-        color = kwargs.pop("c","black")
+        color = kwargs.pop("color",'#636EFA')
+        color = kwargs.pop("c",'#636EFA')
         ls = kwargs.pop("ls","-")
         lw = kwargs.pop("lw",6)
         
-        # plot predicted and calculated
-        ax.plot(_fGHz, predicted_gain, lw=6, label='Predicted {}'.format(antenna_name))
-        ax.plot(_fGHz, gain(_fGHz*1e9), label='Measured {}'.format(antenna_name),
+        if angle == 0:
+            # plot predicted and calculated
+            ax.plot(_fGHz, predicted_gain, lw=6, ls='--', c='black', 
+                    label='Company Measured {}'.format(antenna_name))
+            # find and plot the mean of the residuals
+            delta = np.mean(gain(_fGHz*1e9)-predicted_gain)
+            ax.add_artist(AnchoredText("Mean residual: {:0.3} dB".format(delta), 
+                                       loc="lower left", frameon=True))
+        ax.plot(_fGHz, gain(_fGHz*1e9), label='PUEO Measured {}'.format(antenna_name),
                 c=color, ls=ls, lw=lw, **kwargs)#marker='o',lw=6,ms=15)
         
         # plot settings
@@ -532,10 +556,6 @@ class antenna_response:
         legend = ax.legend(loc='lower right')
         for line in legend.get_lines(): 
             line.set_linewidth(15)
-    
-        # find and plot the mean of the residuals
-        delta = np.mean(gain(_fGHz*1e9)-predicted_gain)
-        ax.add_artist(AnchoredText("Mean residual: {:0.3} dB".format(delta), loc="lower left", frameon=True))
             
     
     def plot_beampattern(self, fGHz=None, polar=True, plot_object=None, dBlim=(None,None),
@@ -576,7 +596,7 @@ class antenna_response:
         
         # get a good title
         wf = self.signals[0]  # one of the signal waveforms, assuming they all share base names
-        title = " ".join([wf.date,wf.Tx,"to",wf.Rx,wf.port,wf.plane,title_add])
+        title = " ".join([wf.date,wf.Tx,"to",wf.Rx,wf.port,wf.plane,'Gain [dB]',title_add])
         
         # the plot object
         if polar:  # plotly much nicer for polar plots
@@ -602,6 +622,9 @@ class antenna_response:
             ax = plot_object if plot_object is not None else plt.subplots(figsize=[30,20])[1]
             ax.set(xlabel=r"theta [$\degree$]", ylabel="Gain [dB]", title=title,ylim=dBlim)
         
+        # set colors for plotting
+        COLORS = cycle(px.colors.sequential.OrRd[1:] + ['#530000', '#210000'])
+        
         # now plot the gain response vs angle at each frequency of interest
         for fGHz in _fGHz:
             
@@ -618,10 +641,12 @@ class antenna_response:
                     go.Scatterpolar(
                         r = gains,
                         theta = angles,
-                        mode = 'lines+markers',
+                        mode = 'lines',
                         name = '{:.1f} GHz {}'.format(fGHz,label_add),
+                        line=dict(width=3),
                         marker=dict(symbol='0',size=8,opacity=1),
-                        )
+                        line_color=next(COLORS),
+                        ),
                     )
             else:
                 ax.plot(angles, gains, ls='-', marker="o", lw=4, ms=13, 
@@ -629,7 +654,35 @@ class antenna_response:
         
         # plot settings
         if polar:
-            sf.make_plotly_polar_look_nice(fig, rlim=dBlim, rlabel='Gain [dB]', alltitle=title, **kwargs)
+            
+            # add solid lines for main grid / major ticks
+            rmin,rmax = dBlim
+            for deg in np.arange(-180,180,30):
+                fig.add_trace(
+                    go.Scatterpolar(
+                        r = (rmin,rmax),
+                        theta = (deg,deg),
+                        mode = 'lines',
+                        name = None,
+                        line=dict(color='#cccccc',width=1),
+                        showlegend=False,
+                        )
+                    )
+            circ = np.linspace(-180,180,500)
+            for dB in range(int(rmin), int(rmax)):
+                if dB % 5 == 0:
+                    fig.add_trace(
+                        go.Scatterpolar(
+                            r = dB*np.ones(circ.size),
+                            theta = circ,
+                            mode = 'lines',
+                            name = None,
+                            line=dict(color='#cccccc',width=1),
+                            showlegend=False,
+                            )
+                        )
+            
+            self._make_plotly_polar_look_nice(fig, rlim=dBlim, rlabel='', alltitle=title, **kwargs)
             fig.show()
         else:
             legend = ax.legend(loc='upper right')
@@ -681,8 +734,8 @@ class antenna_response:
         """
         
         # set waveforms
-        self._PULSE = np.array([antennaData(path=path) for path in self.pulse_path])
-        self.pulse = self._PULSE.copy()[0]
+        self._PULSE = antennaData(self.pulse_path)
+        self.pulse = self._PULSE.copy()
         signal_wfs = np.array([antennaData(path=path) for path in self.signal_paths])
             
         # set angles and sort
@@ -702,6 +755,43 @@ class antenna_response:
                                        location="antenna_response.set_data()", 
                                        add='Tested against boresight data {}.'.format(test_wf.label))
             
+    # will restrict everything to a band to prevent interpolating outside of range
+    def _restrict_to_band(self, bandGHz, fHz, *args):
+        '''
+        Truncate data arrays to a given frequency band. This function assumes that
+        the arrays in args are sorted by the given fHz frequency array.
+        
+        Parameters
+        ----------
+        bandGHz : tuple(2)
+            The band (min,max) in GHz to restrict the given arrays to.
+        fHz : np.ndarray
+            Frequency array in Hz used to determine the truncating mask with bandGHz.
+        *args : np.ndarray
+            Arrays to truncate matching fHz.
+
+        Returns
+        -------
+        return_arrays
+            The given fHz and arrays in args truncated to the bandGHz limits.
+        '''
+        
+        # extract the min and max
+        fGHzmin, fGHzmax = bandGHz
+        
+        # set the mask
+        within_band = np.logical_and(fGHzmin*1e9 < fHz,fHz < fGHzmax*1e9)
+        
+        # set the edges to be one step further to include the bounds within the range
+        idx = np.nonzero(within_band)
+        within_band[idx[0] - 1] = True
+        within_band[idx[-1] + 1] = True
+        
+        # make the list of truncated arrays
+        return_arrays = [fHz[within_band]] + [arr[within_band] for arr in args]
+        
+        return return_arrays
+    
     def _force_band(self, fGHz=None, location="antenna_response"):
         """
         Truncate the given frequency array to self.bandGHz. This method also
@@ -731,7 +821,7 @@ class antenna_response:
                      'are outside of antenna_response band, and thus outside of interpolation range. Frequencies ' +
                      'outside of {}-{} GHz have been truncated.'.format(*self.bandGHz))
                 
-                fGHz = sf.restrict_to_band(self.bandGHz, fGHz)[0]
+                fGHz = self.restrict_to_band(self.bandGHz, fGHz)[0]
         
         # return band suitable frequency array
         return fGHz
@@ -791,12 +881,132 @@ class antenna_response:
         label = data_waveform.label
         
         if data_size != test_size:
-            warn('WARNING [{}]: Data "{}" mismatching common size of {} instead of {}. '.format(
+            warn('WARNING [{}]: "{}" mismatching size of {} instead of {}. '.format(
                 location, label, data_size, test_size) + add)
         if test_samplerate != data_samplerate:
-            warn('WARNING [{}]: Data "{}" mismatching common sample rate of {} instead of {}. '.format(
+            warn('WARNING [{}]: "{}" mismatching sample rate of {} instead of {}. '.format(
                 location, label, data_samplerate, test_samplerate) + add)
 
-
+    # Since there's so much just to make the plot look nice, I separated it into this function
+    # If you haven't seen plotly before, prepare yourself for many dictionaries (though imo it's
+    # easier to customize plot settings this way)
+    def _make_plotly_polar_look_nice(self, fig, rlim=(None,None), rlabel='', sector=(0,180), alltitle='', 
+                                    kwargs_for_trace={}, **kwargs):
+        '''
+        Makes plotly's polar plot look nice, to the extent it can on Python...
+    
+        Parameters
+        ----------
+        fig : plotly.Figure
+            The figure to make look nice.
+        rlim : tuple(2)
+            Radial axis (min,max) limits.
+        rlabel : str
+            The radial axis label. The default is ''.
+        sector : tuple(2)
+            Set the angular sector of the chart. Default is (0,180), i.e. upper half.
+        alltitle : str
+            The overall title. The default is ''.
+        kwargs_for_trace : dict
+            Kwargs specifically for plotly.Figure.update_traces(). I planned to use this
+            if I wanted multiple data set ups plotted and wanted to distinguish them by
+            changing the traces to a certain style.
+        **kwargs
+            plotly.Figure.update_layout() kwargs. 
+    
+        Returns
+        -------
+        None.
+    
+        '''
+        
+        # kwarg defaults
+        polar = kwargs.pop('polar', 
+                           dict(                                # polar setting
+                               sector = sector,                 # set chart shape (half)
+                               bgcolor='#fcfcfc',
+                               angularaxis = dict(              # angle axis settings
+                                   dtick = 5,                   # angle tick increment
+                                   ticklabelstep=6,             # tick label increment
+                                   gridcolor='#d6d6d6',         # tick line color
+                                   griddash='dot',              # tick line style
+                                   # rotation = 90,               # rotates data to be on upper half
+                                   direction = "counterclockwise",     # -90 to 90 right to left
+                                   tickfont=dict(size=20),      # angle tick size
+                                   ),
+                               radialaxis=dict(                 # radial axis settings
+                                   angle=0,                     # angle where the tick axis is
+                                   tickangle=0,                 # rotation of ticklabels
+                                   dtick=1,                     # radial tick increment
+                                   ticklabelstep=10,             # tick label increment
+                                   gridcolor='#d6d6d6',         # tick line color
+                                   griddash='dot',              # tick line style
+                                   linecolor='#d6d6d6',         # axis color
+                                   exponentformat="E",          # tick label in exponential form
+                                   title=dict(                  # radial axis label settings
+                                       text=rlabel,             # the label text
+                                       font=dict(               # label font settings
+                                           size = 23,           # label text size
+                                           ),
+                                       ),
+                                   tickfont=dict(size=20),      # radial tick size
+                                   range=rlim,                  # radial limits
+                                    )
+                               ),
+                           )
+        
+        autosize = kwargs.pop('autosize', False)                # we'll custom size the figure
+        
+        width = kwargs.pop('width', 1100)                       # canvas width
+        
+        height = kwargs.pop('height', 820)                      # canvas height
+        
+        legend = kwargs.pop('legend',                           # legend settings
+                            dict(                        
+                                 bgcolor="#d8e4f5",             # legend bg color
+                                 xanchor="right",               # reference for x pos
+                                 x=1.05,                        # legend x pos percentage
+                                 yanchor="top",                 # reference for x pos
+                                 y=1.05,                        # legend y pos percentage
+                                 font=dict(size=20),            # font size
+                                 itemsizing='constant',         # symbol size to not depend on data traces
+                                 itemwidth=30,                  # symbol size
+                                 )
+                            )
+        
+        margin = kwargs.pop('margin',                           # margins
+                            dict(                               
+                                b=30,
+                                t=70,
+                                l=40,
+                                r=60,
+                                ),
+                            )
+        
+        title = kwargs.pop('title',                             # title settings
+                           dict(                                
+                               text=alltitle,                   # title text
+                               x = 0.03,                        # title position
+                               y = 0.98,
+                               font=dict(
+                                   size = 24,                   # title font size
+                                   ),
+                               ),
+                           )
+        
+        # update plotly figure
+        fig.update_layout(
+                polar=polar,
+                autosize=autosize,
+                width=width,
+                height=height,
+                legend=legend,
+                margin=margin,
+                title=title,
+                **kwargs,       # other user specific kwargs
+                )
+        
+        # for the traces themselves
+        fig.update_traces(**kwargs_for_trace)
 
 

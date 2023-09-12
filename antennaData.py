@@ -18,6 +18,7 @@ import os
 os.chdir(HERE)
 
 from waveform import waveform
+from copy import deepcopy
 
 class antennaData(waveform):
     '''
@@ -121,6 +122,10 @@ class antennaData(waveform):
             return " ".join(parts[:2])
         else:
             return " ".join([self.Tx,"to",self.Rx,"Port",self.port,self.plane,"Plane",str(self.angle)+r'$\degree$'])
+        
+    
+    def copy(self):# -> antennaData:
+        return deepcopy(self)
     
     # Private Methods
     # ---------------

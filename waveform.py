@@ -81,6 +81,8 @@ class waveform:
     reset
         Restore the waveform back to its original initialization, before any 
         manipulations.
+    flip
+        Flip the vdata sign.
     zeromean
         Zero mean the data by bringing the average noise level offset to 0.
     resample
@@ -181,6 +183,13 @@ class waveform:
         self.filter = None
         self._keep_odd()
         
+    def flip(self):
+        '''
+        Flip the vdata sign. Paritcularly useful for polarity concerns.
+
+        '''
+        self.data[self.vcol] *= -1
+        
     def zeromean(self, noise_window_ns='best'):
         '''
         Zero mean the data by bringing the average noise level offset to 0.
@@ -226,7 +235,7 @@ class waveform:
             
     # NOTE: currently, resampling will change the amplitude of the FFT. Not sure why. I don't know if the
     # change is consistent for all signals, so I don't know if it's fine to use when calculating antenna responses.
-    def resample(self, new_samplerate) -> None:
+    def resample(self, new_samplerate=5e9) -> None:
         '''
         Resample the vdata. The tdata will retain the range, and thus the length
         of the data may change from resampling.
@@ -259,15 +268,15 @@ class waveform:
         
         self._keep_odd()
     
-    def truncate(self, t_ns_window: tuple) -> None:
+    def truncate(self, t_ns_window = 'best') -> None:
         '''
         Truncate the waveform in time domain.
 
         Parameters
         ----------
-        t_ns_window : tuple
+        t_ns_window : 'best', tuple
             The time domain window (tmin, tmax) in seconds to truncate the waveform
-            instance's self.data.
+            instance's self.data. If 'best', waveform.estimate_window will be used.
         
         Returns
         -------
@@ -276,6 +285,8 @@ class waveform:
         '''
     
         # set the time limits
+        if t_ns_window == 'best':
+            t_ns_window = self.estimate_window()
         t = self.tdata
         t_min, t_max = t_ns_window
         bounds = np.logical_and(t_min < t, t < t_max)
@@ -403,7 +414,9 @@ class waveform:
             
         # pad
         padded_vdata = np.pad(v, (before,after))
-        padded_tdata = np.arange(t[0] - length*dt, t[-1] + (length+1)*dt, dt)
+        padded_tdata_before = np.linspace(t[0] - before*dt, t[0] - dt, before)
+        padded_tdata_after = np.linspace(t[-1] + dt, t[-1] + after*dt, after)
+        padded_tdata = np.append(np.append(padded_tdata_before, t), padded_tdata_after)
         
         # make filter same length
         if self.filter is not None:
@@ -447,22 +460,56 @@ class waveform:
         
         return (tmin,tmax)
     
-    def clean(self) -> None:
+    def clean(self, reset = True,
+              zeromean_kwargs = {'noise_window_ns':'best'},
+              truncate_kwargs = {'t_ns_window':'best'}, 
+              tukey_filter_kwargs = {'t_ns_window':'peak', 'peak_width_ns':50},
+              # resample_kwargs = {'new_samplerate':5e9},
+              zeropad_kwargs = {'length':6, 'where':'both'}) -> None:
         '''
-        Clean the data using the best settings of each available method.
-        Zeromean, truncate, filter, and zeropad the waveform.
+        Clean the data: Zeromean, truncate, filter, and zeropad the waveform.
+        
+        Parameters
+        ----------
+        reset : Bool
+            If True, manipulations are applied to the initialized version of the
+            waveform. Otherwise, further calls of this method can stack.
+        zeromean_kwargs : False, Dict
+            If False, do not zeromean. Otherwise, provide Dict of waveform.zeromean
+            keyword arguments.
+        truncate_kwargs : False, Dict
+            If False, do not truncate. Otherwise, provide Dict of waveform.truncate
+            keyword arguments.
+        tukey_filter_kwargs : False, Dict
+            If False, do not filter. Otherwise, provide Dict of waveform.tukey_filter
+            keyword arguments.
+        zeropad_kwargs : False, Dict
+            If False, do not zeropad. Otherwise, provide Dict of waveform.zeropad
+            keyword arguments.
 
         Returns
         -------
         None
 
         '''
-        self.reset()
-        self.zeromean()
-        self.truncate(self.estimate_window())
-        self.tukey_filter('peak')
-        # self.resample()
-        self.zeropad()
+        if reset:
+            self.reset()
+        
+        if zeromean_kwargs:
+            self.zeromean(**zeromean_kwargs)
+            
+        if truncate_kwargs:
+            self.truncate(**truncate_kwargs)
+        
+        if tukey_filter_kwargs:
+            self.tukey_filter(**tukey_filter_kwargs)
+        
+        # if resample_kwargs:
+        #     self.resample(**resample_kwargs)
+        
+        if zeropad_kwargs:
+            self.zeropad(**zeropad_kwargs)
+        
         self._keep_odd()
         
     def plot(self, ax=None, tscale=1, vscale=1, tlabel=None, vlabel=None, 
@@ -530,7 +577,7 @@ class waveform:
         
         # show filter
         if show_filter and (self.filter is not None):
-            ax.plot(self.tdata*tscale, self.filter*self.vdata.max()*vscale, lw=lw, ls='--', alpha=0.5)
+            ax.plot(self.tdata*tscale, self.filter*self.vdata.max()*vscale, c='black', lw=lw, ls='--', alpha=0.5)
     
     def calc_fft(self, rfft: bool = False, ignore_DC: bool = True) -> tuple[np.ndarray,np.ndarray,np.ndarray]:
         '''
@@ -569,7 +616,7 @@ class waveform:
         fftdB = 10 * np.log10( np.abs(fftdata)**2 / 50)
         
         # get the corresponding frequency array using the corresponding fft function
-        fHz = rFFTfreq(self.datasize, 1. / self.samplerate)[freq_slice] if rfft else FFTfreq(self.datasize, self.samplerate)[freq_slice] #ignore DC bin
+        fHz = rFFTfreq(self.datasize, 1. / self.samplerate)[freq_slice] if rfft else FFTfreq(self.datasize, 1. / self.samplerate)[freq_slice] #ignore DC bin
         
         return (fHz, fftdata, fftdB)
         
