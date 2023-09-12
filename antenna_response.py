@@ -223,11 +223,17 @@ class antenna_response:
     def impulse_response(self):
         '''
         Return the (time [ns], response [m/ns]) impulse response of the boresight signal.
+        
+        Calculation is done using Weiner deconvolution method to suppress irrelevant high frequencies.
+        SNR characteristics are currently fixed across frequencies for all signals, being as low as
+        1 outside of the frequency band and 1000 within the frequency band, with a linear slope
+        connecting outside and inside levels and spanning 150 MHz.
 
         Returns
         -------
-        None.
-
+        (impulse response time, impulse response)
+            The impulse response time domain in ns and amplitude in m/ns (complex). 
+            Time domain is determined using signal samplerate and impulse response data length.
         '''
         
         warn("WARNING [antenna_response.impulse_response()]: THIS METHOD IS NOT YET FULLY DEBUGGED.")
@@ -276,7 +282,6 @@ class antenna_response:
         # calculate impulse response (TO DO)
         
         # Simple division: IR = sqrt((r*c*V_r(f)) / (i*f*V_src(f)))
-        # this method is noisy in high frequencies
         # IRfft2 = phys * ( sfft / pfft )  # the fft of imp resp squared (radicand)
         
         # -- wiener deconvolution --
